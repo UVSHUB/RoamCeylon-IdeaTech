@@ -16,24 +16,37 @@ export class AnalyticsService {
     category: 'planner' | 'feedback' | 'system',
     eventType: string,
     userId?: string,
-
     metadata: Record<string, any> = {},
+    eventId?: string,
+    timestamp?: Date,
   ): Promise<void> {
     try {
+      const data = {
+        ...(eventId ? { id: eventId } : {}),
+        userId,
+        eventType,
+        metadata,
+        ...(timestamp ? { timestamp } : {}),
+      };
+
       if (category === 'planner') {
-        await this.prisma.plannerEvent.create({
-          data: { userId, eventType, metadata },
-        });
+        await this.prisma.plannerEvent.create({ data });
       } else if (category === 'feedback') {
-        await this.prisma.feedbackEvent.create({
-          data: { userId, eventType, metadata },
-        });
+        await this.prisma.feedbackEvent.create({ data });
       } else {
-        await this.prisma.systemMetric.create({
-          data: { userId, eventType, metadata },
-        });
+        await this.prisma.systemMetric.create({ data });
       }
-    } catch (err) {
+    } catch (err: unknown) {
+      if (
+        err &&
+        typeof err === 'object' &&
+        'code' in err &&
+        err.code === 'P2002'
+      ) {
+        // Ignore gracefully due to idempotency
+        this.logger.debug(`[Analytics] Duplicate event ignored: ${eventId}`);
+        return;
+      }
       this.logger.error(
         `[Analytics] Failed to record ${category}/${eventType}: ${err instanceof Error ? err.message : String(err)}`,
       );
@@ -46,13 +59,12 @@ export class AnalyticsService {
 
   /**
    * GET /analytics/planner/daily
-   * Returns planner event counts grouped by eventType for today.
    */
   async getPlannerDailyStats() {
     const startOfDay = new Date();
     startOfDay.setHours(0, 0, 0, 0);
 
-    const [events, totalEvents, plannerEventsData, recentResponseEvents] =
+    const [events, totalEvents, recentResponseEvents, stats] =
       await Promise.all([
         this.prisma.plannerEvent.groupBy({
           by: ['eventType'],
@@ -63,33 +75,21 @@ export class AnalyticsService {
           where: { timestamp: { gte: startOfDay } },
         }),
         this.prisma.plannerEvent.findMany({
-          where: {
-            eventType: 'planner_generated',
-            timestamp: { gte: startOfDay },
-          },
-          select: { metadata: true },
-        }),
-        this.prisma.plannerEvent.findMany({
           where: { eventType: 'planner_generated' },
           select: { metadata: true },
           orderBy: { timestamp: 'desc' },
           take: 30,
         }),
+        this.prisma.$queryRaw<Array<{ avg_val: string | number }>>`
+        SELECT AVG(CAST(metadata->>'durationMs' AS numeric)) as avg_val
+        FROM "PlannerEvent"
+        WHERE "eventType" = 'planner_generated'
+          AND "timestamp" >= ${startOfDay}
+      `,
       ]);
 
-    let totalDuration = 0;
-    let durationCount = 0;
-
-    for (const e of plannerEventsData) {
-      const md = e.metadata as Record<string, any>;
-      if (typeof md?.durationMs === 'number') {
-        totalDuration += md.durationMs;
-        durationCount++;
-      }
-    }
-
-    const avgResponseTimeMs =
-      durationCount > 0 ? Math.round(totalDuration / durationCount) : 0;
+    const statsVal = stats[0]?.avg_val;
+    const avgResponseTimeMs = statsVal ? Math.round(Number(statsVal)) : 0;
 
     const recentResponseTimes = recentResponseEvents
       .map(
@@ -136,7 +136,6 @@ export class AnalyticsService {
 
   /**
    * GET /analytics/feedback/rate
-   * Returns feedback submission rate: total submissions and avg per day.
    */
   async getFeedbackRate() {
     const startOfDay = new Date();
@@ -145,20 +144,30 @@ export class AnalyticsService {
       startOfDay.getTime() - 6 * 24 * 60 * 60 * 1000,
     );
 
-    const [totalFeedbacks, recentEventsData] = await Promise.all([
+    const [totalFeedbacks, last7DaysEvents] = await Promise.all([
       this.prisma.plannerFeedback.count(),
-      this.prisma.feedbackEvent.findMany({
+      this.prisma.feedbackEvent.count({
         where: { timestamp: { gte: last7DaysDate } },
-        select: { eventType: true, metadata: true, timestamp: true },
       }),
     ]);
 
-    const recentEventsCount = recentEventsData.length;
-    const avgPerDay = recentEventsCount / 7;
+    const avgPerDay = last7DaysEvents / 7;
 
-    let positiveCount = 0;
+    const ratingStats = await this.prisma.$queryRaw<
+      Array<{ rating: string | number; count: string | number }>
+    >`
+      SELECT 
+        CAST(metadata->>'rating' AS INTEGER) as rating,
+        COUNT(*) as count
+      FROM "FeedbackEvent"
+      WHERE "eventType" = 'feedback_submitted'
+        AND "timestamp" >= ${last7DaysDate}
+        AND metadata->>'rating' IS NOT NULL
+      GROUP BY CAST(metadata->>'rating' AS INTEGER)
+    `;
+
     let submittedCount = 0;
-
+    let positiveCount = 0;
     const ratingDistribution = [
       { rating: 1, count: 0 },
       { rating: 2, count: 0 },
@@ -167,16 +176,16 @@ export class AnalyticsService {
       { rating: 5, count: 0 },
     ];
 
-    for (const e of recentEventsData) {
-      if (e.eventType === 'feedback_submitted') {
-        submittedCount++;
-        const md = e.metadata as Record<string, any>;
-        if (typeof md?.rating === 'number') {
-          const r = Math.min(5, Math.max(1, Math.round(md.rating)));
-          ratingDistribution[r - 1].count++;
-          if (md.rating >= 4) {
-            positiveCount++;
-          }
+    for (const row of ratingStats) {
+      const rowRating = row.rating;
+      const rowCount = row.count;
+      if (rowRating && !isNaN(Number(rowRating))) {
+        const r = Math.min(5, Math.max(1, Math.round(Number(rowRating))));
+        const c = Number(rowCount);
+        ratingDistribution[r - 1].count += c;
+        submittedCount += c;
+        if (r >= 4) {
+          positiveCount += c;
         }
       }
     }
@@ -186,30 +195,35 @@ export class AnalyticsService {
         ? parseFloat(((positiveCount / submittedCount) * 100).toFixed(1))
         : 0;
 
-    // Build real last7Days trend array for submission events
+    const trendStats = await this.prisma.$queryRaw<
+      Array<{ day: string; count: string | number }>
+    >`
+      SELECT 
+        TO_CHAR("timestamp", 'YYYY-MM-DD') as day,
+        COUNT(*) as count
+      FROM "FeedbackEvent"
+      WHERE "eventType" = 'feedback_submitted'
+        AND "timestamp" >= ${last7DaysDate}
+      GROUP BY TO_CHAR("timestamp", 'YYYY-MM-DD')
+    `;
+
+    const trendMap = new Map(trendStats.map((t) => [t.day, Number(t.count)]));
+
     const last7Days: { date: string; count: number }[] = [];
     for (let i = 6; i >= 0; i--) {
       const d = new Date(startOfDay);
       d.setDate(d.getDate() - i);
-      const nextD = new Date(d);
-      nextD.setDate(nextD.getDate() + 1);
-
-      const countForDay = recentEventsData.filter(
-        (e) =>
-          e.eventType === 'feedback_submitted' &&
-          e.timestamp >= d &&
-          e.timestamp < nextD,
-      ).length;
+      const dateStr = d.toISOString().split('T')[0];
 
       last7Days.push({
-        date: d.toISOString().split('T')[0],
-        count: countForDay,
+        date: dateStr,
+        count: trendMap.get(dateStr) || 0,
       });
     }
 
     return {
       totalFeedbacksAllTime: totalFeedbacks,
-      last7DaysEvents: recentEventsCount,
+      last7DaysEvents,
       avgFeedbackEventsPerDay: parseFloat(avgPerDay.toFixed(2)),
       positiveFeedbackPercentage,
       ratingDistribution,
@@ -219,36 +233,24 @@ export class AnalyticsService {
 
   /**
    * GET /analytics/system/errors
-   * Returns error counts from system metrics in the last 24 hours.
    */
   async getSystemErrors() {
     const last24h = new Date(Date.now() - 24 * 60 * 60 * 1000);
 
-    const errors = await this.prisma.systemMetric.findMany({
-      where: {
-        eventType: 'api_error',
-        timestamp: { gte: last24h },
-      },
-      orderBy: { timestamp: 'desc' },
-      take: 50,
-      select: {
-        id: true,
-        eventType: true,
-        metadata: true,
-        timestamp: true,
-      },
-    });
-
-    const errorCount = await this.prisma.systemMetric.count({
-      where: {
-        eventType: 'api_error',
-        timestamp: { gte: last24h },
-      },
-    });
-
-    const totalRequests = await this.prisma.systemMetric.count({
-      where: { timestamp: { gte: last24h } },
-    });
+    const [errorCount, totalRequests, errors] = await Promise.all([
+      this.prisma.systemMetric.count({
+        where: { eventType: 'api_error', timestamp: { gte: last24h } },
+      }),
+      this.prisma.systemMetric.count({
+        where: { timestamp: { gte: last24h } },
+      }),
+      this.prisma.systemMetric.findMany({
+        where: { eventType: 'api_error', timestamp: { gte: last24h } },
+        orderBy: { timestamp: 'desc' },
+        take: 50,
+        select: { id: true, eventType: true, metadata: true, timestamp: true },
+      }),
+    ]);
 
     const errorRate =
       totalRequests > 0
@@ -261,6 +263,41 @@ export class AnalyticsService {
       errorCount,
       errorRate: `${errorRate}%`,
       recentErrors: errors,
+    };
+  }
+
+  /**
+   * GET /analytics/system/health
+   */
+  async getSystemHealth() {
+    const last1h = new Date(Date.now() - 60 * 60 * 1000);
+
+    const [stats, errorCount, totalRequests] = await Promise.all([
+      this.prisma.$queryRaw<Array<{ avg_val: string | number }>>`
+        SELECT AVG(CAST(metadata->>'responseTimeMs' AS numeric)) as avg_val
+        FROM "SystemMetric"
+        WHERE "timestamp" >= ${last1h}
+      `,
+      this.prisma.systemMetric.count({
+        where: { eventType: 'api_error', timestamp: { gte: last1h } },
+      }),
+      this.prisma.systemMetric.count({
+        where: { timestamp: { gte: last1h } },
+      }),
+    ]);
+
+    const statsVal = stats[0]?.avg_val;
+    const avgLatency = statsVal ? Math.round(Number(statsVal)) : 0;
+    const errorRate =
+      totalRequests > 0 ? (errorCount / totalRequests) * 100 : 0;
+    const successRate = 100 - errorRate;
+
+    return {
+      status: errorRate > 5 ? 'degraded' : 'healthy',
+      avgLatencyMs: avgLatency,
+      errorRate: parseFloat(errorRate.toFixed(2)),
+      successRate: parseFloat(successRate.toFixed(2)),
+      totalRequestsLastHour: totalRequests,
     };
   }
 }

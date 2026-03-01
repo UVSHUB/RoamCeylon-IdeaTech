@@ -110,10 +110,17 @@ export class PlannerService {
 
     // Fire Analytics Event: trip_saved
     this.analyticsService
-      .recordEvent('planner', 'trip_saved', userId, {
-        tripId: result.id,
-        destination: result.destination,
-      })
+      .recordEvent(
+        'planner',
+        'trip_saved',
+        userId,
+        {
+          tripId: result.id,
+          destination: result.destination,
+        },
+        `trip_save_${result.id}`,
+        new Date(),
+      )
       .catch((e) => console.error('Failed to record trip_saved event', e));
 
     return result as SavedTrip;
@@ -271,10 +278,17 @@ export class PlannerService {
 
     // Fire Analytics Event: feedback_submitted
     this.analyticsService
-      .recordEvent('feedback', 'feedback_submitted', userId, {
-        tripId,
-        rating: feedbackValue,
-      })
+      .recordEvent(
+        'feedback',
+        'feedback_submitted',
+        userId,
+        {
+          tripId,
+          rating: feedbackValue,
+        },
+        `feedback_${userId}_${tripId}_${Date.now()}`,
+        new Date(),
+      )
       .catch((e) =>
         console.error('Failed to record feedback_submitted event', e),
       );

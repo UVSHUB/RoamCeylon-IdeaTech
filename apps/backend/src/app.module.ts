@@ -12,6 +12,7 @@ import { AIModule } from './modules/ai/ai.module';
 import { PlannerModule } from './modules/planner/planner.module';
 import { FeedbackModule } from './modules/feedback/feedback.module';
 import { AnalyticsModule } from './modules/analytics/analytics.module';
+import { AlertsModule } from './modules/alerts/alerts.module';
 import { AnalyticsMiddleware } from './modules/analytics/analytics.middleware';
 // import { ThrottlerModule } from '@nestjs/throttler';
 
@@ -33,6 +34,7 @@ import { AnalyticsMiddleware } from './modules/analytics/analytics.middleware';
     PlannerModule,
     FeedbackModule,
     AnalyticsModule,
+    AlertsModule,
   ],
   controllers: [AppController],
   providers: [AppService],

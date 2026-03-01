@@ -67,7 +67,7 @@ type PrismaAny = {
 @Injectable()
 export class PlannerAggregationService {
   private readonly logger = new Logger(PlannerAggregationService.name);
-  private readonly CACHE_TTL = 600000; // 10 minutes
+  private readonly CACHE_TTL = 60000; // 60 seconds
   private readonly POSITIVE_RATING_THRESHOLD = 4;
   private readonly MINIMUM_FEEDBACK_THRESHOLD = 3;
 

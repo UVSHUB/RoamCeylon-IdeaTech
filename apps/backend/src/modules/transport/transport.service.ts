@@ -155,11 +155,18 @@ export class TransportService {
     });
 
     this.analyticsService
-      .recordEvent('system', 'transport_started', passengerId, {
-        rideId: ride.id,
-        pickup,
-        destination,
-      })
+      .recordEvent(
+        'system',
+        'transport_started',
+        passengerId,
+        {
+          rideId: ride.id,
+          pickup,
+          destination,
+        },
+        `ride_start_${ride.id}`,
+        new Date(),
+      )
       .catch((e) => console.error('Failed to log transport_started event', e));
 
     return ride;
@@ -228,6 +235,8 @@ export class TransportService {
             rideId,
             durationMs: endTime.getTime() - currentSession.startTime.getTime(),
           },
+          `ride_completed_${rideId}`,
+          endTime,
         )
         .catch((e) => console.error('Failed to record transport_completed', e));
     }

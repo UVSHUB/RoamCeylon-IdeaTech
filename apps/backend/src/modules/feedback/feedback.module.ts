@@ -7,6 +7,7 @@ import { FeedbackMappingService } from './feedback-mapping.service';
 import { RankingService } from './ranking.service';
 import { BiasMonitorService } from './bias-monitor.service';
 import { AggregationValidatorService } from './aggregation-validator.service';
+import { TrendMonitoringService } from './trend-monitoring.service';
 
 @Module({
   imports: [PrismaModule],
@@ -16,6 +17,7 @@ import { AggregationValidatorService } from './aggregation-validator.service';
     RankingService,
     BiasMonitorService,
     AggregationValidatorService,
+    TrendMonitoringService,
   ],
   exports: [
     FeedbackService,

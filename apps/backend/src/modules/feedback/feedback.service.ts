@@ -91,10 +91,10 @@ export class FeedbackService {
         rating,
         category,
       );
-      
+
       // NEW SPRINT 8 TASK: Trigger drift check asynchronously so it doesn't block the user's request
-      this.checkSystemDriftWarning().catch((err) => 
-        this.logger.error('Failed to run drift detection check', err)
+      this.checkSystemDriftWarning().catch((err) =>
+        this.logger.error('Failed to run drift detection check', err),
       );
     }
   }
@@ -108,7 +108,7 @@ export class FeedbackService {
 
     // We need a statistically significant amount of data before sounding the alarm
     const MINIMUM_FEEDBACK_COUNT = 50;
-    const DRIFT_THRESHOLD_PERCENT = 70; // X% 
+    const DRIFT_THRESHOLD_PERCENT = 70; // X%
 
     if (allFeedback.length < MINIMUM_FEEDBACK_COUNT) return;
 
@@ -133,7 +133,7 @@ export class FeedbackService {
     if (positivityRate < DRIFT_THRESHOLD_PERCENT) {
       this.logger.warn(
         `🚨 AI DRIFT WARNING: System positivity has dropped to ${positivityRate.toFixed(1)}%! ` +
-        `Only ${positiveCount} positive ratings out of ${validCount} total.`
+          `Only ${positiveCount} positive ratings out of ${validCount} total.`,
       );
     }
   }

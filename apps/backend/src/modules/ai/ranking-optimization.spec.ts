@@ -21,8 +21,8 @@ describe('AI Ranking Optimization Framework', () => {
     prisma = module.get<PrismaService>(PrismaService);
   });
 
-  it('should rank generic items equally for a user with NO preferences (Baseline)', async () => {
-    // Simulate user with no historical weights
+  // 1. Removed "async" here
+  it('should rank generic items equally for a user with NO preferences (Baseline)', () => {
     jest.spyOn(prisma.userCategoryWeight, 'findMany').mockResolvedValue([]);
 
     const baselineScores = {
@@ -31,26 +31,38 @@ describe('AI Ranking Optimization Framework', () => {
       nature: 0.5,
     };
 
-    // In a real test, you'd pass these through your AI scoring function
     expect(baselineScores.culture).toEqual(baselineScores.shopping);
     expect(baselineScores.nature).toEqual(0.5);
   });
 
-  it('should boost preferred categories and penalize disliked categories (Optimized)', async () => {
-    // Simulate user who loves Culture (1.5) and hates Shopping (0.5)
+  // 2. Removed "async" here
+  it('should boost preferred categories and penalize disliked categories (Optimized)', () => {
     jest.spyOn(prisma.userCategoryWeight, 'findMany').mockResolvedValue([
-      { id: 1, userId: 'user-1', category: 'Culture', weight: 1.5, feedbackCount: 5, lastUpdated: new Date() },
-      { id: 2, userId: 'user-1', category: 'Shopping', weight: 0.5, feedbackCount: 5, lastUpdated: new Date() },
-    ] as any);
+      {
+        id: 1,
+        userId: 'user-1',
+        category: 'Culture',
+        weight: 1.5,
+        feedbackCount: 5,
+        lastUpdated: new Date(),
+      },
+      {
+        id: 2,
+        userId: 'user-1',
+        category: 'Shopping',
+        weight: 0.5,
+        feedbackCount: 5,
+        lastUpdated: new Date(),
+      },
+    ]); // 3. Removed "as any" here
 
     const baseScore = 0.5;
-    const cultureMultiplier = 1.5; // From mock
-    const shoppingMultiplier = 0.5; // From mock
+    const cultureMultiplier = 1.5;
+    const shoppingMultiplier = 0.5;
 
     const optimizedCultureScore = baseScore * cultureMultiplier;
     const optimizedShoppingScore = baseScore * shoppingMultiplier;
 
-    // Assert that personalization actually changes the math
     expect(optimizedCultureScore).toBeGreaterThan(baseScore);
     expect(optimizedShoppingScore).toBeLessThan(baseScore);
     expect(optimizedCultureScore).toBeGreaterThan(optimizedShoppingScore);

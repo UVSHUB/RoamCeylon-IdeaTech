@@ -36,17 +36,16 @@ describe('Feedback Mapping Impact Measurement', () => {
   it('should increase weight ONLY after MIN_FEEDBACK threshold is met', async () => {
     const userId = 'user-123';
     const category = 'Nature';
-    
+
     // Mock the existing weight at baseline 1.0, but with 3 prior feedbacks!
     jest.spyOn(prisma.userCategoryWeight, 'findUnique').mockResolvedValue({
-      id: '1', 
-      userId, 
-      category, 
-      weight: 1.0, 
+      id: 1,
+      userId,
+      category,
+      weight: 1.0,
       feedbackCount: 3, // Meets the threshold for learning
-      createdAt: new Date(), 
-      updatedAt: new Date()
-    } as any);
+      lastUpdated: new Date(),
+    });
 
     const updateSpy = jest.spyOn(prisma.userCategoryWeight, 'update');
 
@@ -56,7 +55,7 @@ describe('Feedback Mapping Impact Measurement', () => {
     // Verify that update was called to increase the weight
     expect(updateSpy).toHaveBeenCalled();
     const updateArgs = updateSpy.mock.calls[0][0];
-    
+
     // The new weight should be 1.1 (1.0 + 0.1 CATEGORY_DELTA)
     expect(updateArgs.data.weight).toBe(1.1);
     expect(updateArgs.data.feedbackCount).toBe(4);

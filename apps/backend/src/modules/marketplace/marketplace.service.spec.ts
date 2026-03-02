@@ -53,7 +53,7 @@ describe('MarketplaceService', () => {
       expect(mockCacheManager.set).toHaveBeenCalledWith(
         'marketplace:categories',
         expect.any(Array),
-        3600000
+        3600000,
       );
     });
   });

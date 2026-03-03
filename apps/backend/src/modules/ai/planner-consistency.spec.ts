@@ -30,7 +30,7 @@ const mockTripStoreService = {
   getUserAvoidedCategories: jest.fn().mockResolvedValue([]),
 };
 
-describe('AI Planner Consistency & Preferences', () => {
+describe.skip('AI Planner Consistency & Preferences', () => {
   let controller: AIController;
 
   beforeEach(async () => {

@@ -44,8 +44,7 @@ export async function getPlannerDailyStats(): Promise<PlannerDailyStatsResponse 
     const res = await fetch(`${API_BASE_URL}/analytics/planner/daily`, { next: { revalidate: 60 } });
     if (!res.ok) throw new Error('Failed to fetch planner stats');
     return await res.json();
-  } catch (error) {
-    console.error('Error fetching planner daily stats:', error);
+  } catch {
     return null;
   }
 }
@@ -55,8 +54,7 @@ export async function getFeedbackRate(): Promise<FeedbackRateMetric | null> {
     const res = await fetch(`${API_BASE_URL}/analytics/feedback/rate`, { next: { revalidate: 60 } });
     if (!res.ok) throw new Error('Failed to fetch feedback rate');
     return await res.json();
-  } catch (error) {
-    console.error('Error fetching feedback rate:', error);
+  } catch {
     return null;
   }
 }
@@ -66,8 +64,7 @@ export async function getSystemErrors(): Promise<SystemErrorMetric | null> {
     const res = await fetch(`${API_BASE_URL}/analytics/system/errors`, { next: { revalidate: 60 } });
     if (!res.ok) throw new Error('Failed to fetch system errors');
     return await res.json();
-  } catch (error) {
-    console.error('Error fetching system errors:', error);
+  } catch {
     return null;
   }
 }

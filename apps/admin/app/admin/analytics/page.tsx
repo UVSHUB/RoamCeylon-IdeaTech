@@ -4,6 +4,7 @@ import { BarChart } from "../../../components/charts/BarChart";
 import { Map, Cpu, Star, AlertTriangle } from 'lucide-react';
 import { getPlannerDailyStats, getFeedbackRate, getSystemErrors } from "../../../lib/api";
 import { DashboardRefresh } from "../../../components/DashboardRefresh";
+import { SystemHealthMonitor } from "../../../components/SystemHealthMonitor";
 
 export const revalidate = 60; // 60 seconds Cache for page level revalidation
 
@@ -35,13 +36,10 @@ export default async function AnalyticsPage() {
     count: stat.count
   })) || [];
 
-  // Define Thresholds
+  // Define Thresholds for server-side warnings list
   const ERROR_RATE_THRESHOLD = 5; // %
   const RESPONSE_TIME_THRESHOLD = 2000; // ms
   const POSITIVE_FEEDBACK_THRESHOLD = 80; // %
-  const SYSTEM_HIGH_LOAD_MS = 5000;
-
-  const isHighLoad = avgResponseMs > SYSTEM_HIGH_LOAD_MS || (systemErrors && systemErrors.errorRate > 10) || !plannerDaily;
 
   const warnings = [];
   if (systemErrors && systemErrors.errorRate > ERROR_RATE_THRESHOLD) {
@@ -72,15 +70,7 @@ export default async function AnalyticsPage() {
         <div>
           <div className="flex items-center gap-3 mb-1">
             <h2 className="text-2xl font-bold tracking-tight">Overview</h2>
-            {isHighLoad && (
-              <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold bg-rose-100 text-rose-700 dark:bg-rose-950/50 dark:text-rose-400 border border-rose-200 dark:border-rose-900 shadow-sm transition-all">
-                <span className="relative flex h-2 w-2">
-                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-rose-400 opacity-75"></span>
-                  <span className="relative inline-flex rounded-full h-2 w-2 bg-rose-500"></span>
-                </span>
-                System under high load
-              </span>
-            )}
+            <SystemHealthMonitor />
           </div>
           <p className="text-zinc-500 dark:text-zinc-400 mt-1">
             Track user engagement and platform metrics.

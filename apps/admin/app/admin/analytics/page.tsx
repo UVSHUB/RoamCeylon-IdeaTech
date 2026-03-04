@@ -3,6 +3,10 @@ import { LineChart } from "../../../components/charts/LineChart";
 import { BarChart } from "../../../components/charts/BarChart";
 import { Map, Cpu, Star, AlertTriangle } from 'lucide-react';
 import { getPlannerDailyStats, getFeedbackRate, getSystemErrors } from "../../../lib/api";
+import { DashboardRefresh } from "../../../components/DashboardRefresh";
+import { SystemHealthMonitor } from "../../../components/SystemHealthMonitor";
+
+export const revalidate = 60; // 60 seconds Cache for page level revalidation
 
 export default async function AnalyticsPage() {
   const [plannerDaily, feedbackRate, systemErrors] = await Promise.all([
@@ -32,11 +36,42 @@ export default async function AnalyticsPage() {
     count: stat.count
   })) || [];
 
+  // Define Thresholds for server-side warnings list
+  const ERROR_RATE_THRESHOLD = 5; // %
+  const RESPONSE_TIME_THRESHOLD = 2000; // ms
+  const POSITIVE_FEEDBACK_THRESHOLD = 80; // %
+
+  const warnings = [];
+  if (systemErrors && systemErrors.errorRate > ERROR_RATE_THRESHOLD) {
+    warnings.push({
+      id: 'error_rate',
+      message: `System error rate is high (${systemErrors.errorRate}%).`,
+      type: 'critical'
+    });
+  }
+  if (avgResponseMs > RESPONSE_TIME_THRESHOLD) {
+    warnings.push({
+      id: 'response_time',
+      message: `Average response time degraded (${avgResponseFormatted}). Expected < ${RESPONSE_TIME_THRESHOLD}ms.`,
+      type: 'warning'
+    });
+  }
+  if (feedbackRate && feedbackRate.positiveFeedbackPercentage < POSITIVE_FEEDBACK_THRESHOLD) {
+    warnings.push({
+      id: 'feedback',
+      message: `Positive AI feedback dropped below threshold (${feedbackRate.positiveFeedbackPercentage}%).`,
+      type: 'warning'
+    });
+  }
+
   return (
     <div className="space-y-6">
       <div className="mb-8 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
         <div>
-          <h2 className="text-2xl font-bold tracking-tight">Overview</h2>
+          <div className="flex items-center gap-3 mb-1">
+            <h2 className="text-2xl font-bold tracking-tight">Overview</h2>
+            <SystemHealthMonitor />
+          </div>
           <p className="text-zinc-500 dark:text-zinc-400 mt-1">
             Track user engagement and platform metrics.
           </p>
@@ -45,17 +80,34 @@ export default async function AnalyticsPage() {
           <button className="px-4 py-2 text-sm font-medium bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-lg hover:bg-zinc-50 dark:hover:bg-zinc-800 transition-colors shadow-sm">
             Export Report
           </button>
-          <button className="px-4 py-2 text-sm font-medium text-white bg-zinc-900 dark:bg-white dark:text-zinc-900 rounded-lg hover:bg-zinc-800 dark:hover:bg-zinc-100 transition-colors shadow-sm">
-            Refresh Data
-          </button>
+          <DashboardRefresh intervalMs={60000} />
         </div>
       </div>
+
+      {/* Warning Banners */}
+      {warnings.length > 0 && (
+        <div className="flex flex-col gap-3">
+          {warnings.map((warning) => (
+            <div 
+              key={warning.id} 
+              className={`flex items-center gap-3 p-4 rounded-lg border shadow-sm ${
+                warning.type === 'critical' 
+                  ? 'bg-rose-50 dark:bg-rose-950/30 text-rose-800 dark:text-rose-400 border-rose-200 dark:border-rose-900' 
+                  : 'bg-amber-50 dark:bg-amber-950/30 text-amber-800 dark:text-amber-400 border-amber-200 dark:border-amber-900'
+              }`}
+            >
+              <AlertTriangle className="w-5 h-5 flex-shrink-0" />
+              <p className="text-sm font-medium">{warning.message}</p>
+            </div>
+          ))}
+        </div>
+      )}
 
       {/* Metric Cards */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
         <MetricCard
           title="Total Planner Requests (Today)"
-          value={plannerGenerated.toString()}
+          value={plannerDaily ? plannerGenerated.toString() : "Unavailable"}
           icon={<Cpu className="w-5 h-5" />}
           colorVariant="blue"
         />
@@ -67,7 +119,7 @@ export default async function AnalyticsPage() {
         />
         <MetricCard
           title="Avg Response Time"
-          value={avgResponseFormatted}
+          value={plannerDaily ? avgResponseFormatted : "Unavailable"}
           icon={<Map className="w-5 h-5" />}
           colorVariant="purple"
           sparklineData={plannerDaily?.recentResponseTimes}
@@ -90,12 +142,22 @@ export default async function AnalyticsPage() {
             <p className="text-sm text-zinc-500 dark:text-zinc-400">Total trips generated over the last 7 days.</p>
           </div>
           <div className="p-6 flex-1 w-full min-h-[350px]">
-            <LineChart
-              data={plannerTrendData}
-              index="date"
-              categories={['usage']}
-              colors={['#3b82f6']}
-            />
+            {plannerDaily ? (
+              <LineChart
+                data={plannerTrendData}
+                index="date"
+                categories={['usage']}
+                colors={['#3b82f6']}
+              />
+            ) : (
+              <div className="flex flex-col items-center justify-center text-center h-full min-h-[300px] space-y-3 bg-zinc-50 dark:bg-zinc-900/50 rounded-lg border border-zinc-100 dark:border-zinc-800">
+                <AlertTriangle className="w-10 h-10 text-amber-500 mb-2 opacity-80" />
+                <p className="font-semibold text-zinc-900 dark:text-zinc-100">Planner metrics unavailable</p>
+                <p className="text-sm text-zinc-500 dark:text-zinc-400 max-w-xs mx-auto">
+                  The system is currently experiencing high latency. Service graceful degradation is active.
+                </p>
+              </div>
+            )}
           </div>
         </div>
 

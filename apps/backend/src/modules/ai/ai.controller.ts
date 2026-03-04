@@ -2893,11 +2893,18 @@ export class AIController {
 
     if (userId) {
       this.analyticsService
-        .recordEvent('planner', 'planner_generated', userId, {
-          tripId: savedMeta?.tripId,
-          destination: response.plan.destination,
-          durationMs: totalTime,
-        })
+        .recordEvent(
+          'planner',
+          'planner_generated',
+          userId,
+          {
+            tripId: savedMeta?.tripId,
+            destination: response.plan.destination,
+            durationMs: totalTime,
+          },
+          crypto.randomUUID(),
+          new Date(),
+        )
         .catch((e) =>
           console.error('Failed to record planner_generated event', e),
         );

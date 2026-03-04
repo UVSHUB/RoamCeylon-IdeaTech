@@ -15,6 +15,8 @@ import { CreateTripDto } from './dto/create-trip.dto';
 import { UpdateTripDto } from './dto/update-trip.dto';
 import { CreateFeedbackDto } from './dto/create-feedback.dto';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
+import { UserThrottlerGuard } from '../../common/guards/user-throttler.guard';
+import { Throttle } from '@nestjs/throttler';
 import { Request } from 'express';
 import { PlannerMetricsInterceptor } from './interceptors/planner-metrics.interceptor';
 
@@ -32,6 +34,8 @@ export class PlannerController {
   ) {}
 
   @Post('save')
+  @UseGuards(UserThrottlerGuard)
+  @Throttle({ default: { limit: 5, ttl: 60000 } })
   async saveTrip(
     @Req() req: RequestWithUser,
     @Body() body: CreateTripDto,
@@ -70,6 +74,8 @@ export class PlannerController {
   }
 
   @Post('feedback')
+  @UseGuards(UserThrottlerGuard)
+  @Throttle({ default: { limit: 5, ttl: 60000 } })
   async submitFeedback(
     @Req() req: RequestWithUser,
     @Body() body: CreateFeedbackDto,

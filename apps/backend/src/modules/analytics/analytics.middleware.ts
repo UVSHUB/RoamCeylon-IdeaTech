@@ -3,6 +3,7 @@
 import { Injectable, NestMiddleware, Logger } from '@nestjs/common';
 import { Request, Response, NextFunction } from 'express';
 import { AnalyticsService } from './analytics.service';
+import * as crypto from 'crypto';
 
 @Injectable()
 export class AnalyticsMiddleware implements NestMiddleware {
@@ -23,6 +24,8 @@ export class AnalyticsMiddleware implements NestMiddleware {
       // Determine event category
       const eventType = isError ? 'api_error' : 'api_call';
       const category = this.resolveCategory(url);
+      const eventId = crypto.randomUUID();
+      const explicitTimestamp = new Date(startTime);
 
       const metadata = {
         method,
@@ -40,7 +43,14 @@ export class AnalyticsMiddleware implements NestMiddleware {
 
       // Persist analytics event (non-blocking — fire and forget)
       this.analyticsService
-        .recordEvent(category, eventType, userId, metadata)
+        .recordEvent(
+          category,
+          eventType,
+          userId,
+          metadata,
+          eventId,
+          explicitTimestamp,
+        )
         .catch((err: unknown) => {
           this.logger.error(
             `[Analytics] Failed to persist event: ${err instanceof Error ? err.message : String(err)}`,

@@ -18,17 +18,17 @@ export interface TripDestination {
 export interface UserPersonalizationProfile {
   likedCategories: string[];
   previouslyVisitedIds: string[];
-  dislikedCategories?: string[]; // NEW: To handle negative feedback safely
+  dislikedCategories?: string[];
 }
 
 // --- CONFIGURATION ---
 const MAX_HOURS_PER_DAY = 7;
 const MIN_CONFIDENCE_THRESHOLD = 0.4;
 
-// --- WEIGHTING SYSTEM ---
-const WEIGHT_LIKED_CATEGORY = 0.15; // Boost for likes
-const WEIGHT_PAST_INTERACTION = 0.25; // Boost for history
-const WEIGHT_DISLIKE_PENALTY = 0.2; // NEW: "Soft Penalty" (Safeguard)
+// --- WEIGHTING SYSTEM (SPRINT 8: Multipliers instead of flat addition) ---
+const MULTIPLIER_LIKED_CATEGORY = 1.15; // 15% boost for likes
+const MULTIPLIER_PAST_INTERACTION = 1.25; // 25% boost for history
+const MULTIPLIER_DISLIKE_PENALTY = 0.8; // 20% reduction (Safeguard)
 
 // --- HELPER: Haversine Distance ---
 export const getDistanceKm = (
@@ -70,23 +70,21 @@ const calculatePersonalizedScore = (
 
   if (!profile) return { score, reason };
 
-  // 1. Positive Signal: Category Affinity
+  // 1. Positive Signal: Category Affinity (Multiplicative)
   if (profile.likedCategories.includes(place.metadata.category)) {
-    score += WEIGHT_LIKED_CATEGORY;
+    score *= MULTIPLIER_LIKED_CATEGORY;
     reason = 'preference';
   }
 
-  // 2. Positive Signal: Explicit Interest
+  // 2. Positive Signal: Explicit Interest (Multiplicative)
   if (profile.previouslyVisitedIds.includes(place.id)) {
-    score += WEIGHT_PAST_INTERACTION;
+    score *= MULTIPLIER_PAST_INTERACTION;
     reason = 'preference';
   }
 
-  // 3. Negative Signal: SAFEGUARDED PENALTY
-  // Instead of completely banning (Boolean False), we lower the score.
+  // 3. Negative Signal: SAFEGUARDED PENALTY (Multiplicative)
   if (profile.dislikedCategories?.includes(place.metadata.category)) {
-    score -= WEIGHT_DISLIKE_PENALTY;
-    // We do NOT set reason to 'preference' here; dislikes should just lower rank.
+    score *= MULTIPLIER_DISLIKE_PENALTY;
   }
 
   // Clamp score (Min 0.1 so it doesn't break math, Max 1.0)
@@ -99,7 +97,6 @@ export const distributeActivitiesAcrossDays = (
   numberOfDays: number,
   userProfile?: UserPersonalizationProfile,
 ): TripDestination[][] => {
-  // 1. Score & Tag
   const pool = allDestinations
     .map((d) => {
       const { score, reason } = calculatePersonalizedScore(d, userProfile);
@@ -113,13 +110,9 @@ export const distributeActivitiesAcrossDays = (
     })
     .filter((d) => {
       if (!d.coordinates) return false;
-      // RULE: Score must be >= 0.4
-      // A "Disliked" place (0.8 - 0.2 = 0.6) will SURVIVE.
-      // A "Mediocre" disliked place (0.5 - 0.2 = 0.3) will be DROPPED.
       return (d.confidenceScore || 0) >= MIN_CONFIDENCE_THRESHOLD;
     });
 
-  // Sort by PERSONALIZED Score
   pool.sort((a, b) => (b.confidenceScore || 0) - (a.confidenceScore || 0));
 
   const dayPlans: TripDestination[][] = [];

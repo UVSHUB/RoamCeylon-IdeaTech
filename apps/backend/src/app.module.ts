@@ -12,7 +12,9 @@ import { AIModule } from './modules/ai/ai.module';
 import { PlannerModule } from './modules/planner/planner.module';
 import { FeedbackModule } from './modules/feedback/feedback.module';
 import { AnalyticsModule } from './modules/analytics/analytics.module';
+import { AlertsModule } from './modules/alerts/alerts.module';
 import { AnalyticsMiddleware } from './modules/analytics/analytics.middleware';
+import { ScheduleModule } from '@nestjs/schedule';
 // import { ThrottlerModule } from '@nestjs/throttler';
 
 @Module({
@@ -31,8 +33,10 @@ import { AnalyticsMiddleware } from './modules/analytics/analytics.middleware';
     MarketplaceModule,
     AIModule,
     PlannerModule,
+    ScheduleModule.forRoot(),
     FeedbackModule,
     AnalyticsModule,
+    AlertsModule,
   ],
   controllers: [AppController],
   providers: [AppService],

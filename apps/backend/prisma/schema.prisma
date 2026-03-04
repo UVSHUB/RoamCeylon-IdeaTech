@@ -84,6 +84,7 @@ model SavedTrip {
   preferences Json?
 
   @@index([userId, createdAt])
+  @@index([destination])
 }
 
 model PlannerFeedback {
@@ -92,7 +93,7 @@ model PlannerFeedback {
   tripId        String
   feedbackValue Json
   createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
+  updatedAt     DateTime @updatedAt @default(now())
 
   @@unique([userId, tripId], name: "unique_user_trip_feedback")
   @@index([tripId])
@@ -106,7 +107,7 @@ model UserCategoryWeight {
   category      String
   weight        Float    @default(1.0)
   feedbackCount Int      @default(0)
-  lastUpdated   DateTime @updatedAt
+  lastUpdated   DateTime @updatedAt @default(now())
 
   @@unique([userId, category])
   @@index([userId])
@@ -162,6 +163,7 @@ model PlannerEvent {
   @@index([userId])
   @@index([eventType])
   @@index([timestamp])
+  @@index([eventType, timestamp])
 }
 
 model FeedbackEvent {
@@ -174,6 +176,7 @@ model FeedbackEvent {
   @@index([userId])
   @@index([eventType])
   @@index([timestamp])
+  @@index([eventType, timestamp])
 }
 
 model SystemMetric {
@@ -185,4 +188,21 @@ model SystemMetric {
 
   @@index([eventType])
   @@index([timestamp])
+  @@index([eventType, timestamp])
 }
+
+model SystemAlert {
+  id          String    @id @default(uuid())
+  type        String
+  severity    String
+  metricValue Float
+  threshold   Float
+  createdAt   DateTime  @default(now())
+  resolvedAt  DateTime?
+
+  @@index([type])
+  @@index([severity])
+  @@index([createdAt])
+  @@index([resolvedAt])
+}
+

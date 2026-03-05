@@ -63,7 +63,10 @@ export class PlannerMetricsInterceptor implements NestInterceptor {
           };
 
           PlannerMetricsInterceptor.recentMetrics.push(metric);
-          if (PlannerMetricsInterceptor.recentMetrics.length > this.MAX_METRICS_MEMORY) {
+          if (
+            PlannerMetricsInterceptor.recentMetrics.length >
+            this.MAX_METRICS_MEMORY
+          ) {
             PlannerMetricsInterceptor.recentMetrics.shift(); // Remove oldest
           }
 

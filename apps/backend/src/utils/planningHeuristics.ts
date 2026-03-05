@@ -1,3 +1,5 @@
+// apps/backend/src/utils/planningHeuristics.ts
+
 // --- TYPES ---
 export interface TripDestination {
   id: string;
@@ -25,10 +27,11 @@ export interface UserPersonalizationProfile {
 const MAX_HOURS_PER_DAY = 7;
 const MIN_CONFIDENCE_THRESHOLD = 0.4;
 
-// --- WEIGHTING SYSTEM (SPRINT 8: Multipliers instead of flat addition) ---
+// --- WEIGHTING SYSTEM (Calibrated Multipliers) ---
 const MULTIPLIER_LIKED_CATEGORY = 1.15; // 15% boost for likes
 const MULTIPLIER_PAST_INTERACTION = 1.25; // 25% boost for history
 const MULTIPLIER_DISLIKE_PENALTY = 0.8; // 20% reduction (Safeguard)
+const DIVERSITY_PENALTY_BASE = 0.5; // 50% penalty for repeating a category in the same day
 
 // --- HELPER: Haversine Distance ---
 export const getDistanceKm = (
@@ -60,7 +63,7 @@ const parseDuration = (durationStr?: string): number => {
   return match ? parseInt(match[0], 10) : 2;
 };
 
-// --- HELPER: Apply Personalization Signals ---
+// --- HELPER: Apply Personalization Signals (Weight Calibration) ---
 const calculatePersonalizedScore = (
   place: TripDestination,
   profile?: UserPersonalizationProfile,
@@ -70,25 +73,25 @@ const calculatePersonalizedScore = (
 
   if (!profile) return { score, reason };
 
-  // 1. Positive Signal: Category Affinity (Multiplicative)
+  // 1. Positive Signal
   if (profile.likedCategories.includes(place.metadata.category)) {
     score *= MULTIPLIER_LIKED_CATEGORY;
     reason = 'preference';
   }
 
-  // 2. Positive Signal: Explicit Interest (Multiplicative)
+  // 2. Explicit Interest
   if (profile.previouslyVisitedIds.includes(place.id)) {
     score *= MULTIPLIER_PAST_INTERACTION;
     reason = 'preference';
   }
 
-  // 3. Negative Signal: SAFEGUARDED PENALTY (Multiplicative)
+  // 3. Negative Signal
   if (profile.dislikedCategories?.includes(place.metadata.category)) {
     score *= MULTIPLIER_DISLIKE_PENALTY;
   }
 
-  // Clamp score (Min 0.1 so it doesn't break math, Max 1.0)
-  return { score: Math.max(0.1, Math.min(score, 1.0)), reason };
+  // CALIBRATION: Ensure scores stay within a stable math range
+  return { score: Math.max(0.1, Math.min(score, 1.8)), reason };
 };
 
 // --- MAIN ALGORITHM ---
@@ -113,6 +116,7 @@ export const distributeActivitiesAcrossDays = (
       return (d.confidenceScore || 0) >= MIN_CONFIDENCE_THRESHOLD;
     });
 
+  // Initial sort by best overall score
   pool.sort((a, b) => (b.confidenceScore || 0) - (a.confidenceScore || 0));
 
   const dayPlans: TripDestination[][] = [];
@@ -131,7 +135,7 @@ export const distributeActivitiesAcrossDays = (
 
     while (currentDayHours < MAX_HOURS_PER_DAY) {
       let bestCandidateIdx = -1;
-      let minDistance = Infinity;
+      let highestDynamicScore = -Infinity; // Replaces 'minDistance' with dynamic scoring
       const lastPlace = currentDay[currentDay.length - 1];
 
       pool.forEach((candidate, idx) => {
@@ -142,19 +146,38 @@ export const distributeActivitiesAcrossDays = (
         )
           return;
 
-        const dist = getDistanceKm(
-          lastPlace.coordinates.latitude,
-          lastPlace.coordinates.longitude,
-          candidate.coordinates.latitude,
-          candidate.coordinates.longitude,
-        );
+        if (currentDayHours + candidate._hours <= MAX_HOURS_PER_DAY) {
+          const dist = getDistanceKm(
+            lastPlace.coordinates.latitude,
+            lastPlace.coordinates.longitude,
+            candidate.coordinates.latitude,
+            candidate.coordinates.longitude,
+          );
 
-        if (
-          dist < minDistance &&
-          currentDayHours + candidate._hours <= MAX_HOURS_PER_DAY
-        ) {
-          minDistance = dist;
-          bestCandidateIdx = idx;
+          // 1. DIVERSITY CHECK: How many times is this category already in today's plan?
+          const categoryRepetitions = currentDay.filter(
+            (p) => p.metadata.category === candidate.metadata.category,
+          ).length;
+
+          // 2. APPLY REPETITION PENALTY: Score drops by 50% for every repetition
+          const diversityPenalty = Math.pow(
+            DIVERSITY_PENALTY_BASE,
+            categoryRepetitions,
+          );
+
+          // 3. DISTANCE MULTIPLIER: Closer is better (convert distance to a 0.1 - 1.0 multiplier)
+          const distanceMultiplier = Math.max(0.1, 1 - dist / 20);
+
+          // 4. FINAL DYNAMIC SCORE
+          const dynamicScore =
+            (candidate.confidenceScore || 0) *
+            diversityPenalty *
+            distanceMultiplier;
+
+          if (dynamicScore > highestDynamicScore) {
+            highestDynamicScore = dynamicScore;
+            bestCandidateIdx = idx;
+          }
         }
       });
 
@@ -164,7 +187,7 @@ export const distributeActivitiesAcrossDays = (
         currentDay.push(candidate);
         currentDayHours += candidate._hours;
       } else {
-        break;
+        break; // No more items fit in this day
       }
     }
     dayPlans.push(currentDay);

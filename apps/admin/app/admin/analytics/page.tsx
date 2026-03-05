@@ -17,7 +17,7 @@ export default async function AnalyticsPage() {
 
   // Aggregate stats from the Daily Planner Metrics
   const breakdown = plannerDaily?.breakdown || [];
-  const plannerGenerated = breakdown.find(p => p.eventType === 'planner_generated')?._count._all || 0;
+  const plannerGenerated = breakdown.find(p => p.eventType === 'planner_generated')?.count || 0;
   
   // Format Response Time 
   const avgResponseMs = plannerDaily?.avgResponseTimeMs || 0;
@@ -42,10 +42,14 @@ export default async function AnalyticsPage() {
   const POSITIVE_FEEDBACK_THRESHOLD = 80; // %
 
   const warnings = [];
-  if (systemErrors && systemErrors.errorRate > ERROR_RATE_THRESHOLD) {
+  const parsedErrorRate = typeof systemErrors?.errorRate === 'string' 
+    ? parseFloat(systemErrors.errorRate) 
+    : (systemErrors?.errorRate || 0);
+
+  if (systemErrors && parsedErrorRate > ERROR_RATE_THRESHOLD) {
     warnings.push({
       id: 'error_rate',
-      message: `System error rate is high (${systemErrors.errorRate}%).`,
+      message: `System error rate is high (${systemErrors.errorRate}).`,
       type: 'critical'
     });
   }
@@ -126,9 +130,9 @@ export default async function AnalyticsPage() {
         />
         <MetricCard
           title="System Errors (24h)"
-          value={systemErrors?.totalErrors?.toString() || '0'}
+          value={systemErrors?.errorCount?.toString() || '0'}
           icon={<AlertTriangle className="w-5 h-5" />}
-          trend={systemErrors ? { value: systemErrors.errorRate, label: "error rate" } : undefined}
+          trend={systemErrors ? { value: parsedErrorRate, label: "error rate" } : undefined}
           colorVariant="rose"
         />
       </div>

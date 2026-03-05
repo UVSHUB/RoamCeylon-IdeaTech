@@ -4,9 +4,7 @@ const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://127.0.0.1:3001';
 
 export interface PlannerDailyMetric {
   eventType: string;
-  _count: {
-    _all: number;
-  };
+  count: number;
 }
 
 export interface PlannerDailyStatsResponse {
@@ -35,15 +33,17 @@ export interface FeedbackRateMetric {
 }
 
 export interface SystemErrorMetric {
-  totalErrors: number;
-  errorRate: number;
+  errorCount: number;
+  totalRequests: number;
+  errorRate: string | number;
 }
 
 export async function getPlannerDailyStats(): Promise<PlannerDailyStatsResponse | null> {
   try {
     const res = await fetch(`${API_BASE_URL}/analytics/planner/daily`, { next: { revalidate: 60 } });
     if (!res.ok) throw new Error('Failed to fetch planner stats');
-    return await res.json();
+    const json = await res.json();
+    return json.data;
   } catch {
     return null;
   }
@@ -53,7 +53,8 @@ export async function getFeedbackRate(): Promise<FeedbackRateMetric | null> {
   try {
     const res = await fetch(`${API_BASE_URL}/analytics/feedback/rate`, { next: { revalidate: 60 } });
     if (!res.ok) throw new Error('Failed to fetch feedback rate');
-    return await res.json();
+    const json = await res.json();
+    return json.data;
   } catch {
     return null;
   }
@@ -63,7 +64,8 @@ export async function getSystemErrors(): Promise<SystemErrorMetric | null> {
   try {
     const res = await fetch(`${API_BASE_URL}/analytics/system/errors`, { next: { revalidate: 60 } });
     if (!res.ok) throw new Error('Failed to fetch system errors');
-    return await res.json();
+    const json = await res.json();
+    return json.data;
   } catch {
     return null;
   }

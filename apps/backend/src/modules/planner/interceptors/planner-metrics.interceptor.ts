@@ -26,7 +26,7 @@ interface MetricData {
 export class PlannerMetricsInterceptor implements NestInterceptor {
   private readonly logger = new Logger(PlannerMetricsInterceptor.name);
   private readonly SLOW_QUERY_THRESHOLD = 200; // ms, tighter than global 500ms
-  private recentMetrics: MetricData[] = [];
+  private static recentMetrics: MetricData[] = [];
   private readonly MAX_METRICS_MEMORY = 100;
 
   constructor() {}
@@ -62,9 +62,9 @@ export class PlannerMetricsInterceptor implements NestInterceptor {
             statusCode,
           };
 
-          this.recentMetrics.push(metric);
-          if (this.recentMetrics.length > this.MAX_METRICS_MEMORY) {
-            this.recentMetrics.shift(); // Remove oldest
+          PlannerMetricsInterceptor.recentMetrics.push(metric);
+          if (PlannerMetricsInterceptor.recentMetrics.length > this.MAX_METRICS_MEMORY) {
+            PlannerMetricsInterceptor.recentMetrics.shift(); // Remove oldest
           }
 
           // Persist metric (stored in in-memory circular buffer above)
@@ -100,7 +100,7 @@ export class PlannerMetricsInterceptor implements NestInterceptor {
     slowQueryCount: number;
     endpointBreakdown: Record<string, { count: number; avgDuration: number }>;
   } {
-    if (this.recentMetrics.length === 0) {
+    if (PlannerMetricsInterceptor.recentMetrics.length === 0) {
       return {
         totalRequests: 0,
         averageResponseTime: 0,
@@ -109,13 +109,13 @@ export class PlannerMetricsInterceptor implements NestInterceptor {
       };
     }
 
-    const totalRequests = this.recentMetrics.length;
-    const totalDuration = this.recentMetrics.reduce(
+    const totalRequests = PlannerMetricsInterceptor.recentMetrics.length;
+    const totalDuration = PlannerMetricsInterceptor.recentMetrics.reduce(
       (sum, m) => sum + m.duration,
       0,
     );
     const averageResponseTime = totalDuration / totalRequests;
-    const slowQueryCount = this.recentMetrics.filter(
+    const slowQueryCount = PlannerMetricsInterceptor.recentMetrics.filter(
       (m) => m.duration > this.SLOW_QUERY_THRESHOLD,
     ).length;
 
@@ -125,7 +125,7 @@ export class PlannerMetricsInterceptor implements NestInterceptor {
       { durations: number[]; count: number }
     >();
 
-    for (const metric of this.recentMetrics) {
+    for (const metric of PlannerMetricsInterceptor.recentMetrics) {
       if (!endpointMap.has(metric.endpoint)) {
         endpointMap.set(metric.endpoint, { durations: [], count: 0 });
       }

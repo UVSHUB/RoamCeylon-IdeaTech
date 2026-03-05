@@ -259,16 +259,36 @@ export class PlannerService {
       throw new BadRequestException(`Trip with ID ${tripId} not found.`);
     }
 
-    const feedback = await this.prisma.plannerFeedback.upsert({
-      where: {
-        unique_user_trip_feedback: {
-          userId,
-          tripId,
+    let feedback;
+    try {
+      feedback = await this.prisma.plannerFeedback.upsert({
+        where: {
+          unique_user_trip_feedback: {
+            userId,
+            tripId,
+          },
         },
-      },
-      update: { feedbackValue: { rating: feedbackValue } },
-      create: { userId, tripId, feedbackValue: { rating: feedbackValue } },
-    });
+        update: { feedbackValue: { rating: feedbackValue } },
+        create: { userId, tripId, feedbackValue: { rating: feedbackValue } },
+      });
+    } catch (error: any) {
+      // Handle race condition: concurrent upserts may both attempt to create,
+      // causing a unique constraint violation (P2002). Retry as update.
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+      if (error?.code === 'P2002') {
+        feedback = await this.prisma.plannerFeedback.update({
+          where: {
+            unique_user_trip_feedback: {
+              userId,
+              tripId,
+            },
+          },
+          data: { feedbackValue: { rating: feedbackValue } },
+        });
+      } else {
+        throw error;
+      }
+    }
 
     await this.feedbackMappingService.processFeedback(
       userId,

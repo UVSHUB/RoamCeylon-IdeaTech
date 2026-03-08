@@ -180,7 +180,6 @@ class AIService {
       const totalActivities = safeItinerary.reduce((sum, day) => sum + day.activities.length, 0);
       
       if (safeItinerary.length === 0 || totalActivities === 0) {
-        console.warn('[AIService] Generated plan was empty. Throwing specific error.');
         throw new Error('We could not generate a plan for these preferences. Please try adjusting your destination or interests.');
       }
 
@@ -201,7 +200,6 @@ class AIService {
 
       return mappedResponse;
     } catch (error) {
-      console.error('[AIService] Error in generateTripPlan after retries:', error);
       throw error;
     }
   }

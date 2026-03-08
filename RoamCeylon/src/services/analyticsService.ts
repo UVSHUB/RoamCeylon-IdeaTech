@@ -1,6 +1,4 @@
 
-import { TripPlanResponse } from './aiService';
-
 class AnalyticsService {
   private static instance: AnalyticsService;
 
@@ -14,10 +12,7 @@ class AnalyticsService {
   }
 
   logEvent(eventName: string, params?: object) {
-    if (__DEV__) {
-      console.log(`[Analytics] Event: ${eventName}`, params || '');
-    }
-    // TODO: Integrate with real analytics provider (Firebase, Amplitude, etc.)
+    // Analytics provider integration point
   }
 
   logPlanGenerated(destination: string, duration: string, budget: string) {

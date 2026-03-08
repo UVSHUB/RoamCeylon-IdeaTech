@@ -37,8 +37,8 @@ try {
   if (MAPBOX_CONFIG.accessToken) {
     MapboxGL.setAccessToken(MAPBOX_CONFIG.accessToken);
   }
-} catch (error) {
-  console.warn('Mapbox SDK not available:', error);
+} catch {
+  // Mapbox SDK unavailable — map features disabled
 }
 
 import { TripPlannerForm } from './TripPlannerForm';

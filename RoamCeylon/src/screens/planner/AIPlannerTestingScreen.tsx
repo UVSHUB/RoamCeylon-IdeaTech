@@ -1,11 +1,10 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useRef } from 'react';
 import {
   View,
   Text,
   StyleSheet,
   ScrollView,
   TouchableOpacity,
-  Switch,
   ActivityIndicator,
   Alert,
 } from 'react-native';
@@ -49,7 +48,7 @@ interface PerformanceMetrics {
 interface TestResult {
   destination: string;
   timestamp: Date;
-  optimizationEnabled: boolean;
+  rankingStrategy: 'optimized_v1';
   comparisons: RankingComparison[];
   averageImprovement: number;
   performanceMetrics: PerformanceMetrics;
@@ -57,17 +56,13 @@ interface TestResult {
 
 const AIPlannerTestingScreen = () => {
   const navigation = useNavigation<AIPlannerTestingNavigationProp>();
-  const [optimizationEnabled, setOptimizationEnabled] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [testResults, setTestResults] = useState<TestResult | null>(null);
-  const [abSimulationEnabled, setAbSimulationEnabled] = useState(false);
   const [expandedScores, setExpandedScores] = useState<Set<number>>(new Set());
-  const [renderCount, setRenderCount] = useState(0);
 
-  // Performance tracking
-  React.useEffect(() => {
-    setRenderCount(prev => prev + 1);
-  });
+  // Performance tracking — useRef so incrementing never triggers a re-render
+  const renderCountRef = useRef(0);
+  renderCountRef.current += 1;
 
   // Test configuration
   const [testDestination, setTestDestination] = useState('Kandy');
@@ -199,24 +194,7 @@ const AIPlannerTestingScreen = () => {
       const computationEndTime = performance.now();
       const computationTime = computationEndTime - computationStartTime;
 
-      // A/B Simulation: Apply baseline to 50%, optimized to 50%
-      let comparisons: RankingComparison[];
-      if (abSimulationEnabled) {
-        comparisons = comparisonsWithScores.map((comp, index) => {
-          // Alternate between baseline and optimized
-          const useOptimized = index % 2 === 0;
-          return {
-            ...comp,
-            // Mark which variant is being used
-            activity: {
-              ...comp.activity,
-              // Add a flag to indicate which variant (for display purposes)
-            },
-          };
-        });
-      } else {
-        comparisons = comparisonsWithScores;
-      }
+      const comparisons: RankingComparison[] = comparisonsWithScores;
 
       // Calculate average improvement
       const avgImprovement = comparisons.reduce((sum, comp) =>
@@ -228,12 +206,12 @@ const AIPlannerTestingScreen = () => {
       const results: TestResult = {
         destination: testDestination,
         timestamp: new Date(),
-        optimizationEnabled,
+        rankingStrategy: 'optimized_v1',
         comparisons,
         averageImprovement: parseFloat(avgImprovement.toFixed(2)),
         performanceMetrics: {
           rankingComputationTime: parseFloat(computationTime.toFixed(2)),
-          renderCount,
+          renderCount: renderCountRef.current,
           lastRenderTime: parseFloat(renderTime.toFixed(2)),
         },
       };
@@ -252,7 +230,7 @@ const AIPlannerTestingScreen = () => {
     } finally {
       setIsLoading(false);
     }
-  }, [testDestination, testDuration, testBudget, testInterests, optimizationEnabled, abSimulationEnabled, renderCount]);
+  }, [testDestination, testDuration, testBudget, testInterests]);
 
   const toggleScoreExpansion = (index: number) => {
     setExpandedScores(prev => {
@@ -459,52 +437,20 @@ const AIPlannerTestingScreen = () => {
       </View>
 
       <ScrollView style={styles.content} showsVerticalScrollIndicator={false}>
-        {/* Optimization Toggle Card */}
-        <View style={styles.toggleCard}>
+        {/* Ranking Strategy Info Card */}
+        <View style={styles.strategyCard}>
           <View style={styles.toggleHeader}>
-            <MaterialCommunityIcons name="brain" size={24} color="#F59E0B" />
-            <Text style={styles.toggleTitle}>Optimization Mode</Text>
+            <MaterialCommunityIcons name="brain" size={24} color="#10B981" />
+            <Text style={styles.toggleTitle}>Ranking Strategy</Text>
           </View>
-          <View style={styles.toggleRow}>
-            <Text style={styles.toggleLabel}>
-              {optimizationEnabled ? 'Optimized Ranking ON' : 'Baseline Ranking'}
+          <View style={styles.strategyBadgeRow}>
+            <View style={styles.strategyBadge}>
+              <Text style={styles.strategyBadgeText}>optimized_v1</Text>
+            </View>
+            <Text style={styles.strategyDescription}>
+              Enhanced algorithm — active on all results
             </Text>
-            <Switch
-              value={optimizationEnabled}
-              onValueChange={setOptimizationEnabled}
-              trackColor={{ false: '#D1D5DB', true: '#10B981' }}
-              thumbColor={optimizationEnabled ? '#FFFFFF' : '#F3F4F6'}
-            />
           </View>
-          <Text style={styles.toggleDescription}>
-            {optimizationEnabled
-              ? 'Using enhanced ranking algorithm with improved weighting'
-              : 'Using standard baseline ranking algorithm'}
-          </Text>
-        </View>
-
-        {/* A/B Simulation Toggle Card */}
-        <View style={styles.toggleCard}>
-          <View style={styles.toggleHeader}>
-            <MaterialCommunityIcons name="ab-testing" size={24} color="#8B5CF6" />
-            <Text style={styles.toggleTitle}>A/B Simulation Mode</Text>
-          </View>
-          <View style={styles.toggleRow}>
-            <Text style={styles.toggleLabel}>
-              {abSimulationEnabled ? '50/50 Split Active' : 'Disabled'}
-            </Text>
-            <Switch
-              value={abSimulationEnabled}
-              onValueChange={setAbSimulationEnabled}
-              trackColor={{ false: '#D1D5DB', true: '#8B5CF6' }}
-              thumbColor={abSimulationEnabled ? '#FFFFFF' : '#F3F4F6'}
-            />
-          </View>
-          <Text style={styles.toggleDescription}>
-            {abSimulationEnabled
-              ? '50% activities use baseline, 50% use optimized (for internal A/B testing)'
-              : 'All activities use the same ranking algorithm'}
-          </Text>
         </View>
 
         {/* Performance Monitoring Card */}
@@ -679,7 +625,7 @@ const styles = StyleSheet.create({
     flex: 1,
     paddingHorizontal: 20,
   },
-  toggleCard: {
+  strategyCard: {
     backgroundColor: '#FFFFFF',
     borderRadius: 12,
     padding: 16,
@@ -689,6 +635,28 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.1,
     shadowRadius: 4,
     elevation: 3,
+  },
+  strategyBadgeRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    marginTop: 4,
+  },
+  strategyBadge: {
+    backgroundColor: '#D1FAE5',
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 6,
+  },
+  strategyBadgeText: {
+    fontSize: 13,
+    fontWeight: 'bold',
+    color: '#065F46',
+  },
+  strategyDescription: {
+    fontSize: 13,
+    color: '#6B7280',
+    flexShrink: 1,
   },
   toggleHeader: {
     flexDirection: 'row',
@@ -700,22 +668,6 @@ const styles = StyleSheet.create({
     fontWeight: 'bold',
     marginLeft: 8,
     color: '#000',
-  },
-  toggleRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 8,
-  },
-  toggleLabel: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: '#374151',
-  },
-  toggleDescription: {
-    fontSize: 13,
-    color: '#6B7280',
-    marginTop: 4,
   },
   configCard: {
     backgroundColor: '#FFFFFF',

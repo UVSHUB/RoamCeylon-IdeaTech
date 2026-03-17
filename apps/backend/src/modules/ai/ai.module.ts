@@ -8,12 +8,14 @@ import { SearchService } from './retrieval/search.service';
 import { TripStoreService } from './trips/trip-store.service';
 import { PlannerModule } from '../planner/planner.module';
 import { AnalyticsModule } from '../analytics/analytics.module';
+import { FeedbackModule } from '../feedback/feedback.module';
 
 @Module({
   imports: [
     ConfigModule,
     PlannerModule,
     AnalyticsModule,
+    FeedbackModule,
     ThrottlerModule.forRoot([
       {
         ttl: 60000, // 60 seconds

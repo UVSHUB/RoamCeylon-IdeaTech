@@ -1,3 +1,4 @@
+// apps/backend/src/modules/planner/planner.controller.ts
 import {
   Controller,
   Post,
@@ -51,7 +52,6 @@ export class PlannerController {
 
   /**
    * Get performance metrics
-   * Day 46 Task 3: Performance & Stability Check
    * NOTE: Must be declared before @Get(':id') to avoid wildcard route shadowing.
    */
   @Get('metrics')
@@ -61,7 +61,6 @@ export class PlannerController {
 
   /**
    * Get aggregated feedback for a specific trip
-   * Day 46 Task 1: Feedback Aggregation Logic
    */
   @Get('feedback/trip/:tripId')
   async getTripFeedback(@Param('tripId') tripId: string) {
@@ -82,6 +81,20 @@ export class PlannerController {
   @Get('feedback/category/:category')
   async getCategoryFeedback(@Param('category') category: string) {
     return this.plannerService.getCategoryFeedback(category);
+  }
+
+  @Post('feedback')
+  @UseGuards(UserThrottlerGuard)
+  @Throttle({ default: { limit: 5, ttl: 60000 } })
+  async submitFeedback(
+    @Req() req: RequestWithUser,
+    @Body() body: CreateFeedbackDto,
+  ): Promise<unknown> {
+    return this.plannerService.submitFeedback(
+      req.user.userId,
+      body.tripId,
+      body.feedbackRating,
+    );
   }
 
   @Get(':id')
@@ -107,20 +120,5 @@ export class PlannerController {
     @Param('id') id: string,
   ): Promise<SavedTrip> {
     return this.plannerService.deleteTrip(req.user.userId, id);
-  }
-
-  @Post('feedback')
-  @UseGuards(UserThrottlerGuard)
-  @Throttle({ default: { limit: 5, ttl: 60000 } })
-  async submitFeedback(
-    @Req() req: RequestWithUser,
-    @Body() body: CreateFeedbackDto,
-  ) {
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-return
-    return this.plannerService.submitFeedback(
-      req.user.userId,
-      body.tripId,
-      body.feedbackRating,
-    );
   }
 }

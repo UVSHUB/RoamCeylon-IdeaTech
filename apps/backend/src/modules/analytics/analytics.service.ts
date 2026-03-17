@@ -2,6 +2,7 @@
 
 import { Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
+import { randomUUID } from 'crypto';
 
 @Injectable()
 export class AnalyticsService {
@@ -21,19 +22,40 @@ export class AnalyticsService {
     timestamp?: Date,
   ): Promise<void> {
     try {
-      const data = {
-        ...(eventId ? { id: eventId } : {}),
-        userId,
-        eventType,
-        metadata,
-        ...(timestamp ? { timestamp } : {}),
-      };
-
       if (category === 'planner') {
+        const data = {
+          ...(eventId && { id: eventId }),
+          ...(userId && { userId }),
+          eventType,
+          metadata,
+          ...(timestamp && { timestamp }),
+        };
+
         await this.prisma.plannerEvent.create({ data });
       } else if (category === 'feedback') {
+        if (!userId) {
+          throw new Error('Feedback events require userId');
+        }
+
+        // FeedbackEvent.id has no @default in schema, so it must always be supplied.
+        const data = {
+          id: eventId ?? randomUUID(),
+          userId,
+          eventType,
+          metadata,
+          ...(timestamp && { timestamp }),
+        };
+
         await this.prisma.feedbackEvent.create({ data });
       } else {
+        const data = {
+          ...(eventId && { id: eventId }),
+          ...(userId && { userId }),
+          eventType,
+          metadata,
+          ...(timestamp && { timestamp }),
+        };
+
         await this.prisma.systemMetric.create({ data });
       }
     } catch (err: unknown) {

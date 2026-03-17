@@ -25,6 +25,7 @@ import {
 
 import { TripStoreService, SavedTrip } from './trips/trip-store.service';
 import { PlannerService } from '../planner/planner.service';
+import { FeedbackRankingService } from '../feedback/ranking.service';
 import { AnalyticsService } from '../analytics/analytics.service';
 
 interface AuthenticatedRequest extends Request {
@@ -82,6 +83,16 @@ interface ScoredResult extends SearchResultItem {
   priorityScore: number;
   rankingDetails: RankingDetails;
   matchedPreferences: string[];
+}
+
+interface PersonalizationMetrics {
+  trustScore: number;
+  confidence: number;
+  trustMultiplier: number;
+  categoryMultiplier: number;
+  feedbackCount: number;
+  baseScore?: number;
+  finalScore?: number;
 }
 
 type ItineraryCategory =
@@ -467,6 +478,7 @@ export class AIController {
     private readonly tripStore: TripStoreService,
     private readonly plannerService: PlannerService,
     private readonly analyticsService: AnalyticsService,
+    private readonly rankingService: FeedbackRankingService,
   ) {}
 
   @Get('health')
@@ -1096,91 +1108,171 @@ export class AIController {
     };
   }
 
+  private buildFeedbackExplanation(
+    learning: PersonalizationMetrics,
+    category: string,
+  ): string {
+    const { categoryMultiplier, trustMultiplier, confidence, feedbackCount } =
+      learning;
+
+    const parts: string[] = [];
+
+    parts.push(`Ranking was adjusted using learned feedback preferences.`);
+
+    // CATEGORY LEARNING
+    if (categoryMultiplier > 1.05) {
+      parts.push(
+        `Your positive feedback on ${category.toLowerCase()} activities slightly increased its ranking priority.`,
+      );
+    } else if (categoryMultiplier < 0.95) {
+      parts.push(
+        `Past feedback slightly reduced priority for ${category.toLowerCase()} activities.`,
+      );
+    } else {
+      parts.push(
+        `No strong learned preference was detected for this category.`,
+      );
+    }
+
+    // TRUST + CONFIDENCE
+    if (feedbackCount > 0) {
+      parts.push(
+        `${feedbackCount} feedback entries contributed to personalization.`,
+      );
+
+      parts.push(
+        `Personalization influence currently operates at ${(confidence * 100).toFixed(0)}% confidence.`,
+      );
+    }
+
+    if (trustMultiplier > 1.05) {
+      parts.push(
+        `Your feedback history currently has stronger influence on recommendations.`,
+      );
+    }
+
+    parts.push(
+      `Personalization adjustments remain safely limited to maintain stable rankings.`,
+    );
+
+    return `🧠 Personalized ranking: ${parts.join(' ')}`;
+  }
+
   private async buildRichExplanationPersonalized(
     result: SearchResultItem,
     priorityScore: number,
     category: ItineraryCategory,
-    ctx: ExplanationContext,
+    context: ExplanationContext,
     userId?: string,
+    learning?: PersonalizationMetrics,
   ): Promise<RichExplanation> {
     const baseExplanation = this.buildRichExplanation(
       result,
       priorityScore,
       category,
-      ctx,
+      context,
     );
 
-    if (userId) {
-      try {
-        /* -------------------------------------------------- */
-        /*   POSITIVE FEEDBACK INFLUENCE                      */
-        /* -------------------------------------------------- */
-        // Check if user has previously rated trips to this destination highly
-        const positiveDestinations =
-          await this.tripStore.getUserPositiveFeedbackDestinations(userId);
+    baseExplanation.whyThisPlace ??= [];
 
-        const currentDestLower = (ctx.destination || '').toLowerCase();
-        const matchesOverallDest = positiveDestinations.some(
-          (d) => d && currentDestLower.includes(d.toLowerCase()),
-        );
-
-        // Also check if this specific place title matches a positive destination (unlikely for city names but possible)
-        const resultTitleLower = result.title.toLowerCase();
-        const matchesTitle = positiveDestinations.some(
-          (d) => d && resultTitleLower.includes(d.toLowerCase()),
-        );
-
-        if (matchesOverallDest) {
-          baseExplanation.hasPositiveFeedback = true;
-          baseExplanation.whyThisPlace = [
-            `Based on your positive experience in ${ctx.destination}`,
-            ...(baseExplanation.whyThisPlace || []),
-          ];
-        } else if (matchesTitle) {
-          baseExplanation.hasPositiveFeedback = true;
-          baseExplanation.whyThisPlace = [
-            `Based on your positive experience with similar destinations`,
-            ...(baseExplanation.whyThisPlace || []),
-          ];
-        }
-
-        /* -------------------------------------------------- */
-        /*   EXISTING PERSONALIZATION LOGIC                   */
-        /* -------------------------------------------------- */
-
-        const frequentPlacesRaw =
-          await this.tripStore.getUserFrequentPlaces(userId);
-        const frequentPlaces = this.asFrequentPlaces(frequentPlacesRaw);
-
-        const isFrequent = frequentPlaces.some(
-          (p) => p.placeId === String(result.id),
-        );
-
-        if (isFrequent) {
-          baseExplanation.whyThisPlace = [
-            '⭐ You have shown interest in this before',
-            ...(baseExplanation.whyThisPlace || []),
-          ];
-        }
-
-        const categoryPrefs =
-          await this.tripStore.getUserCategoryPreferences(userId);
-        const matchingPref = categoryPrefs.find((p) =>
-          category.toLowerCase().includes(p.category.toLowerCase()),
-        );
-
-        if (matchingPref && matchingPref.count >= 3) {
-          baseExplanation.whyThisPlace?.push(
-            `Based on your ${matchingPref.count} previous ${matchingPref.category} selections`,
-          );
-        }
-      } catch (error) {
-        this.logger.error(
-          `Personalization explanation failed: ${(error as Error).message}`,
-        );
-      }
+    if (!userId) {
+      return baseExplanation;
     }
 
+    try {
+      /* -------------------------------------------------- */
+      /* FETCH USER SIGNALS (single fetch block)            */
+      /* -------------------------------------------------- */
+      const [positiveDestinations, categoryPrefs, frequentPlaces] =
+        await Promise.all([
+          this.tripStore.getUserPositiveFeedbackDestinations(userId),
+          this.tripStore.getUserCategoryPreferences(userId),
+          this.tripStore.getUserFrequentPlaces(userId),
+        ]);
+
+      const destinationLower = (context.destination || '').toLowerCase();
+
+      const resultTitleLower = result.title.toLowerCase();
+
+      /* -------------------------------------------------- */
+      /* POSITIVE DESTINATION EXPERIENCE                    */
+      /* -------------------------------------------------- */
+      const matchesOverallDest = positiveDestinations.some(
+        (d) => d && destinationLower.includes(d.toLowerCase()),
+      );
+
+      const matchesTitle = positiveDestinations.some(
+        (d) => d && resultTitleLower.includes(d.toLowerCase()),
+      );
+
+      if (matchesOverallDest) {
+        baseExplanation.hasPositiveFeedback = true;
+        baseExplanation.whyThisPlace.unshift(
+          `Based on your positive experience in ${context.destination}`,
+        );
+      } else if (matchesTitle) {
+        baseExplanation.hasPositiveFeedback = true;
+        baseExplanation.whyThisPlace.unshift(
+          `Based on your positive experience with similar destinations`,
+        );
+      }
+
+      /* -------------------------------------------------- */
+      /* CATEGORY BEHAVIORAL PREFERENCE                     */
+      /* -------------------------------------------------- */
+      const matchingPrefs = categoryPrefs.find((p) =>
+        category.toLowerCase().includes(p.category.toLowerCase()),
+      );
+
+      if (matchingPrefs && matchingPrefs.count >= 3) {
+        baseExplanation.whyThisPlace.push(
+          `Based on your ${matchingPrefs.count} previous ${matchingPrefs.category} selections`,
+        );
+      }
+
+      /* -------------------------------------------------- */
+      /* FREQUENT PLACE SIGNAL                              */
+      /* -------------------------------------------------- */
+      if (frequentPlaces.some((p) => p.placeId === String(result.id))) {
+        baseExplanation.whyThisPlace.unshift(
+          '⭐ You have shown interest in this before',
+        );
+      }
+
+      /* -------------------------------------------------- */
+      /* EXPLANATION ALIGNMENT (FEEDBACK RANKING)        */
+      /* -------------------------------------------------- */
+      if (learning) {
+        this.logger.log(
+          `[EXPLANATION ALIGNMENT] category=${category}, multiplier=${learning.categoryMultiplier}, trust=${learning.trustMultiplier}, confidence=${learning.confidence}`,
+        );
+
+        if (learning.categoryMultiplier > 1.05) {
+          baseExplanation.whyThisPlace.push(
+            `Ranked higher because you frequently prefer ${category.toLowerCase()} experiences.`,
+          );
+        }
+
+        if (learning.categoryMultiplier < 0.95) {
+          baseExplanation.whyThisPlace.push(
+            `Shown slightly lower based on your past feedback.`,
+          );
+        }
+
+        const feedbackExplanation = this.buildFeedbackExplanation(
+          learning,
+          category,
+        );
+
+        if (feedbackExplanation) {
+          baseExplanation.whyThisPlace.push(feedbackExplanation);
+        }
+      }
+    } catch (error) {
+      this.logger.warn(
+        `Personalization explanation failed: ${(error as Error).message}`,
+      );
+    }
     return baseExplanation;
   }
 
@@ -2397,6 +2489,7 @@ export class AIController {
       return true;
     });
 
+    /* ================= FALLBACK ================= */
     if (filteredResults.length === 0) {
       return {
         plans: this.createFallbackItinerary(dayCount, startDate, destination),
@@ -2404,6 +2497,7 @@ export class AIController {
       };
     }
 
+    /* ================= SCORING ================= */
     const scored = await this.scoreResultsByPreferencesPersonalized(
       filteredResults,
       preferences,
@@ -2446,6 +2540,7 @@ export class AIController {
       maxTotalActivities,
       preferences,
     );
+
     const dayBuckets = this.allocateAcrossDays(
       selectedResults,
       dayCount,
@@ -2455,17 +2550,21 @@ export class AIController {
     const dayPlans: DayPlan[] = [];
     const baseDate = this.parseLocalDate(startDate);
     const seenText = new Set<string>();
+    const metricsCache = new Map<string, any>();
 
+    /* ================= DAY LOOP ================= */
     for (let day = 1; day <= dayCount; day++) {
       const dayDate = this.addDaysLocal(baseDate, day - 1);
-
       const bucket = dayBuckets[day - 1] ?? [];
       const activitiesForDay: EnhancedItineraryItemDto[] = [];
 
       for (let i = 0; i < bucket.length; i++) {
         const result = bucket[i];
         const scoredResult = scored.find((s) => s.id === result.id);
-        const priorityScore = scoredResult?.priorityScore || 0;
+
+        if (!scoredResult) continue;
+
+        const priorityScore = scoredResult.priorityScore;
 
         const category = this.determineActivityCategory(
           result.title,
@@ -2479,14 +2578,11 @@ export class AIController {
         const normalizedText = `${result.title} ${result.content}`
           .toLowerCase()
           .trim();
+
         const novelty = this.computeNovelty(normalizedText, seenText);
         seenText.add(normalizedText);
 
         const totalDays = dayCount;
-
-        if (!scoredResult) {
-          continue; // should never happen, but safe guard
-        }
 
         const timeSlot = this.assignTimeSlot(
           scoredResult,
@@ -2496,6 +2592,39 @@ export class AIController {
           totalDays,
         );
 
+        /* ================= PERSONALIZATION METRICS ================= */
+        let learningMetrics;
+
+        if (userId) {
+          if (!metricsCache.has(category)) {
+            metricsCache.set(
+              category,
+              await this.rankingService.getPersonalizationMetrics(
+                userId,
+                category,
+              ),
+            );
+          }
+
+          learningMetrics = metricsCache.get(category) as
+            | PersonalizationMetrics
+            | undefined;
+        }
+
+        /* ================= EXPLANATION CONTEXT ================= */
+        const context: ExplanationContext = {
+          destination,
+          dayNumber: day,
+          totalDays: dayCount,
+          activityIndex: i,
+          activitiesInDay: bucket.length,
+          preferences,
+          novelty,
+          isFallback: false,
+          timeSlot,
+        };
+
+        /* ================= ACTIVITY ================= */
         const activityItem: EnhancedItineraryItemDto = {
           order: i + 1,
           dayNumber: day,
@@ -2510,18 +2639,9 @@ export class AIController {
             result,
             priorityScore,
             category,
-            {
-              destination,
-              dayNumber: day,
-              totalDays: dayCount,
-              activityIndex: i,
-              activitiesInDay: bucket.length,
-              preferences,
-              novelty,
-              isFallback: false,
-              timeSlot,
-            },
+            context,
             userId,
+            learningMetrics,
           ),
         };
 
@@ -2535,10 +2655,12 @@ export class AIController {
         );
       }
 
+      /* ================= EMPTY DAY SAFETY ================= */
       if (activitiesForDay.length === 0) {
         activitiesForDay.push(this.createSingleDayFallback(day, destination));
       }
 
+      /* ================= ARRIVAL NORMALIZATION ================= */
       if (day === 1 && activitiesForDay.length > 0) {
         activitiesForDay[0].category = 'Arrival';
         activitiesForDay[0].timeSlot = 'Afternoon';
@@ -2560,10 +2682,12 @@ export class AIController {
 
     const endItin = process.hrtime.bigint();
     const totalItinTime = Number(endItin - startItin) / 1_000_000;
+
     this.logger.log(
       `[PERF] generateItinerary took ${totalItinTime.toFixed(2)}ms`,
     );
 
+    /* FINAL GUARANTEED RETURN */
     return { plans: dayPlans, usedFallback: false };
   }
 

@@ -46,7 +46,7 @@ model User {
   name        String?
   createdAt   DateTime  @default(now())
   email       String?
-  updatedAt   DateTime  @default(now()) @updatedAt
+  updatedAt   DateTime  @default(now()) 
   birthday    DateTime?
   gender      String?
   preferences Json?
@@ -72,7 +72,7 @@ model spatial_ref_sys {
 }
 
 model SavedTrip {
-  id          String   @id @default(uuid())
+  id          String    @id
   userId      String
   name        String
   destination String
@@ -85,6 +85,7 @@ model SavedTrip {
 
   @@index([userId, createdAt])
   @@index([destination])
+  @@map("SavedTrip")
 }
 
 model PlannerFeedback {
@@ -99,6 +100,7 @@ model PlannerFeedback {
   @@index([tripId])
   @@index([userId])
   @@index([createdAt])
+  @@map("PlannerFeedback")
 }
 
 model UserCategoryWeight {
@@ -107,10 +109,11 @@ model UserCategoryWeight {
   category      String
   weight        Float    @default(1.0)
   feedbackCount Int      @default(0)
-  lastUpdated   DateTime @updatedAt @default(now())
+  lastUpdated   DateTime @default(now())
 
   @@unique([userId, category])
   @@index([userId])
+  @@map("UserCategoryWeight")
 }
 
 model UserFeedbackSignal {
@@ -149,10 +152,6 @@ model PlannerMetadata {
   updatedAt DateTime @updatedAt
 }
 
-// ==============================
-// Analytics Data Models (Day 49)
-// ==============================
-
 model PlannerEvent {
   id        String   @id @default(uuid())
   userId    String?
@@ -167,7 +166,7 @@ model PlannerEvent {
 }
 
 model FeedbackEvent {
-  id        String   @id @default(uuid())
+  id        String   @id
   userId    String?
   eventType String
   metadata  Json     @default("{}")
@@ -180,11 +179,11 @@ model FeedbackEvent {
 }
 
 model SystemMetric {
-  id           String   @id @default(uuid())
-  userId       String?
-  eventType    String
-  metadata     Json     @default("{}")
-  timestamp    DateTime @default(now())
+  id        String   @id @default(uuid())
+  userId    String?
+  eventType String
+  metadata  Json     @default("{}")
+  timestamp DateTime @default(now())
 
   @@index([eventType])
   @@index([timestamp])

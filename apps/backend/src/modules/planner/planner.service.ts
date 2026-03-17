@@ -1,4 +1,4 @@
-//apps\backend\src\modules\planner\planner.service.ts
+// apps/backend/src/modules/planner/planner.service.ts
 /* eslint-disable @typescript-eslint/no-unsafe-assignment */
 import { Injectable, Inject, BadRequestException } from '@nestjs/common';
 import { CACHE_MANAGER } from '@nestjs/cache-manager';
@@ -13,14 +13,15 @@ import {
 } from './planner-aggregation.service';
 import { FeedbackMappingService } from '../feedback/feedback-mapping.service';
 import { AnalyticsService } from '../analytics/analytics.service';
+import { randomUUID } from 'crypto';
 
 export interface SavedTrip {
   id: string;
   userId: string;
-  name: string;
-  destination: string;
-  startDate: Date;
-  endDate: Date;
+  name: string | null;
+  destination: string | null;
+  startDate: Date | null;
+  endDate: Date | null;
   itinerary: any;
   preferences?: any;
   createdAt: Date;
@@ -83,8 +84,10 @@ export class PlannerService {
 
     const normalizedPrefs = this.normalizePreferences(tripData.preferences);
 
+    // createdAt uses @default(now()), updatedAt uses @updatedAt — neither needs manual supply
     const result = await this.prisma.savedTrip.create({
       data: {
+        id: randomUUID(),
         userId,
         name: tripData.name || 'My Trip',
         destination: tripData.destination || 'Sri Lanka',
@@ -197,6 +200,7 @@ export class PlannerService {
 
     const normalizedPrefs = this.normalizePreferences(data.preferences);
 
+    // updatedAt is handled automatically by @updatedAt
     const updatedTrip = (await this.prisma.savedTrip.update({
       where: {
         id: tripId,
@@ -245,6 +249,239 @@ export class PlannerService {
     });
   }
 
+  /**
+   * Fetches title+content text from the embeddings table for a given destination.
+   * This gives the richest signal for category inference since embeddings contain
+   * real place descriptions seeded from the AI planner data.
+   *
+   * Example: destination="Ella" → finds rows where title/content contains "ella"
+   * → returns "Ella Rock hiking trail panoramic views Nine Arch Bridge..."
+   */
+  private async fetchEmbeddingTextForDestination(
+    destination: string,
+  ): Promise<string> {
+    if (!destination || destination.length < 2) return '';
+
+    try {
+      const dest = `%${destination.toLowerCase()}%`;
+      const rows = await this.prisma.$queryRaw<
+        Array<{ title: string | null; content: string | null }>
+      >`
+        SELECT title, content
+        FROM embeddings
+        WHERE LOWER(title) LIKE ${dest}
+           OR LOWER(content) LIKE ${dest}
+        LIMIT 10
+      `;
+
+      return rows
+        .map((r) => `${r.title ?? ''} ${r.content ?? ''}`)
+        .join(' ')
+        .trim();
+    } catch {
+      // Non-blocking — if embeddings table is empty or query fails,
+      // fall back to destination + itinerary text only
+      return '';
+    }
+  }
+
+  /**
+   * Infers a valid ItineraryCategory from a destination name and optional
+   * itinerary content using keyword scoring — no hardcoded place list needed.
+   *
+   * Strategy:
+   * 1. Score each category by how many of its keywords appear in the text
+   * 2. Return the highest scoring category
+   * 3. Fall back to 'Sightseeing' if nothing matches
+   *
+   * This works for ANY destination worldwide, not just Sri Lanka.
+   */
+  private inferCategoryFromDestination(
+    destination?: string,
+    itineraryText?: string,
+  ): string {
+    if (!destination) return 'Sightseeing';
+
+    // Combine destination + itinerary text for richer signal
+    const text = `${destination} ${itineraryText ?? ''}`.toLowerCase();
+
+    // Keyword → category scoring map
+    // Each array contains keywords that strongly signal that category
+    const CATEGORY_KEYWORDS: Record<string, string[]> = {
+      Beach: [
+        'beach',
+        'surf',
+        'coast',
+        'bay',
+        'shore',
+        'sea',
+        'ocean',
+        'lagoon',
+        'coral',
+        'snorkel',
+        'dive',
+        'wave',
+        'sand',
+        'pier',
+        'marina',
+        'cove',
+        'inlet',
+        'swimming',
+      ],
+      Nature: [
+        'forest',
+        'jungle',
+        'wildlife',
+        'park',
+        'reserve',
+        'nature',
+        'waterfall',
+        'lake',
+        'river',
+        'mountain',
+        'hill',
+        'valley',
+        'tea',
+        'plantation',
+        'botanical',
+        'garden',
+        'bird',
+        'elephant',
+        'leopard',
+        'safari',
+        'trail',
+        'peak',
+        'summit',
+        'rock',
+        'flora',
+        'fauna',
+        'eco',
+        'national park',
+      ],
+      Adventure: [
+        'adventure',
+        'hike',
+        'hiking',
+        'trek',
+        'trekking',
+        'climb',
+        'rafting',
+        'kayak',
+        'zipline',
+        'rappel',
+        'cycle',
+        'cycling',
+        'extreme',
+        'sport',
+        'camp',
+        'camping',
+        'expedition',
+        'waterfall hike',
+        'mountain bike',
+      ],
+      History: [
+        'fort',
+        'ruins',
+        'ancient',
+        'historical',
+        'heritage',
+        'temple',
+        'kovil',
+        'stupa',
+        'dagoba',
+        'palace',
+        'kingdom',
+        'dynasty',
+        'archaeological',
+        'monument',
+        'citadel',
+        'castle',
+        'mosque',
+        'colonial',
+        'war',
+        'battlefield',
+        'museum',
+        'relic',
+      ],
+      Culture: [
+        'culture',
+        'cultural',
+        'festival',
+        'art',
+        'craft',
+        'dance',
+        'music',
+        'ceremony',
+        'ritual',
+        'tradition',
+        'local',
+        'market',
+        'bazaar',
+        'food',
+        'cuisine',
+        'cooking',
+        'city',
+        'town',
+        'urban',
+        'gallery',
+        'performance',
+        'theatre',
+      ],
+      Relaxation: [
+        'spa',
+        'wellness',
+        'resort',
+        'relax',
+        'retreat',
+        'yoga',
+        'meditation',
+        'ayurveda',
+        'massage',
+        'luxury',
+        'serene',
+        'peaceful',
+        'tranquil',
+        'quiet',
+        'calm',
+        'slow',
+      ],
+      Sightseeing: [
+        'viewpoint',
+        'view',
+        'scenic',
+        'landmark',
+        'attraction',
+        'tourist',
+        'sight',
+        'visit',
+        'explore',
+        'tour',
+        'panorama',
+        'famous',
+        'popular',
+        'highlight',
+        'must-see',
+      ],
+    };
+
+    // Score each category
+    const scores: Record<string, number> = {};
+
+    for (const [category, keywords] of Object.entries(CATEGORY_KEYWORDS)) {
+      scores[category] = keywords.filter((kw) => text.includes(kw)).length;
+    }
+
+    // Find highest scoring category
+    const best = Object.entries(scores).sort((a, b) => b[1] - a[1])[0];
+
+    // Only use the match if at least 1 keyword was found
+    if (best && best[1] > 0) {
+      return best[0];
+    }
+
+    return 'Sightseeing';
+  }
+
   async submitFeedback(
     userId: string,
     tripId: string,
@@ -254,46 +491,43 @@ export class PlannerService {
       throw new BadRequestException('Feedback value must be between 1 and 5.');
     }
 
-    const trip = await this.getTrip(userId, tripId);
-    if (!trip) {
+    const tripData = await this.prisma.savedTrip.findFirst({
+      where: { id: tripId },
+      select: { id: true, destination: true, itinerary: true, name: true },
+    });
+
+    if (!tripData) {
       throw new BadRequestException(`Trip with ID ${tripId} not found.`);
     }
 
-    let feedback;
-    try {
-      feedback = await this.prisma.plannerFeedback.upsert({
-        where: {
-          unique_user_trip_feedback: {
-            userId,
-            tripId,
-          },
+    const feedback = await this.prisma.plannerFeedback.upsert({
+      where: {
+        unique_user_trip_feedback: {
+          userId,
+          tripId,
         },
-        update: { feedbackValue: { rating: feedbackValue } },
-        create: { userId, tripId, feedbackValue: { rating: feedbackValue } },
-      });
-    } catch (error: any) {
-      // Handle race condition: concurrent upserts may both attempt to create,
-      // causing a unique constraint violation (P2002). Retry as update.
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
-      if (error?.code === 'P2002') {
-        feedback = await this.prisma.plannerFeedback.update({
-          where: {
-            unique_user_trip_feedback: {
-              userId,
-              tripId,
-            },
-          },
-          data: { feedbackValue: { rating: feedbackValue } },
-        });
-      } else {
-        throw error;
-      }
-    }
+      },
+      update: { feedbackValue: { rating: feedbackValue } },
+      create: { userId, tripId, feedbackValue: { rating: feedbackValue } },
+    });
+
+    // Infer category using 3 sources of text (richest signal first):
+    // 1. Embeddings table: real place descriptions seeded from AI planner data
+    // 2. SavedTrip.itinerary: the stops/activities stored with the trip
+    // 3. SavedTrip.destination: the destination name itself (fallback)
+    const embeddingText = await this.fetchEmbeddingTextForDestination(
+      tripData.destination ?? '',
+    );
+    const itineraryText = JSON.stringify(tripData.itinerary ?? '');
+    const category = this.inferCategoryFromDestination(
+      tripData.destination ?? undefined,
+      `${embeddingText} ${itineraryText}`,
+    );
 
     await this.feedbackMappingService.processFeedback(
       userId,
       feedbackValue,
-      trip.destination, // or proper category field
+      category,
     );
 
     // Fire Analytics Event: feedback_submitted
@@ -318,7 +552,6 @@ export class PlannerService {
 
   /**
    * Get aggregated feedback for a specific trip
-   * Day 46 Task 1: Feedback Aggregation Logic
    */
   async getFeedbackAggregation(tripId: string): Promise<FeedbackAggregation> {
     return this.aggregationService.aggregateTripFeedback(tripId);

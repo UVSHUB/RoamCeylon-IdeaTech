@@ -27,11 +27,14 @@ import { TripStoreService, SavedTrip } from './trips/trip-store.service';
 import { PlannerService } from '../planner/planner.service';
 import { FeedbackRankingService } from '../feedback/ranking.service';
 import { AnalyticsService } from '../analytics/analytics.service';
+import {
+  AIDecisionLoggerService,
+  ActivityDecisionFactors,
+  TripPlanDecisionLog,
+} from './decision/ai-decision-logger.service';
 
 interface AuthenticatedRequest extends Request {
-  user?: {
-    id: string;
-  };
+  user?: { id: string };
 }
 
 interface LogActivityDto {
@@ -64,8 +67,6 @@ export interface TripPlanRequestDto {
   startDate: string;
   endDate: string;
   preferences?: string[];
-
-  // Saved Trip Context integration
   useSavedContext?: boolean; // default true
   mode?: 'new' | 'refine'; // default 'refine'
   tripId?: string; // optional specific trip refinement
@@ -179,7 +180,6 @@ interface TripPlanResponseDto {
       versionNo?: number;
       usedSavedContext?: boolean;
       sourceTripId?: string;
-
       feedback?: {
         previousRating: number | null;
         feedbackCount: number;
@@ -287,14 +287,20 @@ export class AIController {
 
   private readonly EPS = 1e-6;
 
-  /* ==================== DATE FIX HELPERS ==================== */
+  // ── Decision logging state (reset per request) ───────────────────────────
+  private currentSessionId: string =
+    AIDecisionLoggerService.generateSessionId();
+  private currentSessionActivities: ActivityDecisionFactors[] = [];
 
+  // ── Category cache (persists across requests for performance) ────────────
+  private categoryCache = new Map<string | number, ItineraryCategory>();
+
+  /* ==================== DATE FIX HELPERS ==================== */
   // Convert any input date string into YYYY-MM-DD using LOCAL calendar day.
   private toDateOnly(input: unknown): string {
     if (typeof input !== 'string') return '';
     const s = input.trim();
     if (!s) return '';
-
     if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
 
     const d = new Date(s);
@@ -384,7 +390,6 @@ export class AIController {
       if (placeId && placeName) out.push({ placeId, placeName });
     }
 
-    // deterministic ordering
     return out.sort((a, b) => this.collator.compare(a.placeId, b.placeId));
   }
 
@@ -401,7 +406,6 @@ export class AIController {
       if (placeId && category) out.push({ placeId, category });
     }
 
-    // deterministic ordering
     return out.sort(
       (a, b) =>
         this.collator.compare(a.placeId, b.placeId) ||
@@ -426,7 +430,6 @@ export class AIController {
       if (category) out.push({ category, count });
     }
 
-    // deterministic ordering
     return out.sort(
       (a, b) =>
         this.collator.compare(a.category, b.category) || b.count - a.count,
@@ -464,8 +467,7 @@ export class AIController {
       return { previousRating: null, feedbackCount: 0 };
     }
 
-    const latest = entries[0]; // properly typed now
-
+    const latest = entries[0];
     return {
       previousRating: latest.feedbackValue ?? null,
       feedbackCount: entries.length,
@@ -479,6 +481,7 @@ export class AIController {
     private readonly plannerService: PlannerService,
     private readonly analyticsService: AnalyticsService,
     private readonly rankingService: FeedbackRankingService,
+    private readonly decisionLogger: AIDecisionLoggerService,
   ) {}
 
   @Get('health')
@@ -507,22 +510,25 @@ export class AIController {
 
   private normalizePreferences(prefs?: string[]): string[] {
     if (!Array.isArray(prefs)) return [];
-    const normalized = prefs.map((p) => this.normalizeText(p)).filter(Boolean);
 
+    const normalized = prefs.map((p) => this.normalizeText(p)).filter(Boolean);
     const seen = new Set<string>();
     const out: string[] = [];
+
     for (const p of normalized) {
       const key = p.toLowerCase();
       if (seen.has(key)) continue;
       seen.add(key);
       out.push(p);
     }
+
     return out;
   }
 
   private mergePreferencesDeterministic(a: string[], b: string[]): string[] {
     const out: string[] = [];
     const seen = new Set<string>();
+
     for (const p of [...a, ...b]) {
       const t = this.normalizeText(p);
       if (!t) continue;
@@ -531,6 +537,7 @@ export class AIController {
       seen.add(key);
       out.push(t);
     }
+
     return out;
   }
 
@@ -538,10 +545,11 @@ export class AIController {
     return body.useSavedContext !== false && body.mode !== 'new';
   }
 
-  // FIXED: uses LOCAL parsing to avoid UTC shift
+  // Uses LOCAL parsing to avoid UTC shift
   private clampDayCount(startDateStr: string, endDateStr: string): number {
     const start = this.parseLocalDate(startDateStr);
     const end = this.parseLocalDate(endDateStr);
+
     if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) return 1;
 
     const diffDays =
@@ -595,6 +603,7 @@ export class AIController {
       Medium: this.CONFIDENCE_THRESHOLDS.MEDIUM,
       Low: this.CONFIDENCE_THRESHOLDS.MINIMUM,
     };
+
     const threshold = thresholdMap[minConfidence];
 
     const filtered = results.filter((item) => (item.score ?? 0) >= threshold);
@@ -619,13 +628,11 @@ export class AIController {
 
     const avgScore =
       filtered.reduce((sum, r) => sum + (r.score || 0), 0) / filtered.length;
-
     if (
       !fallbackMessage &&
       avgScore < PLANNER_CONFIG.THRESHOLDS.AVG_SCORE_LOW_QUALITY
-    ) {
+    )
       fallbackMessage = this.FALLBACK_MESSAGES.LOW_QUALITY;
-    }
 
     return { filtered, fallbackMessage };
   }
@@ -634,21 +641,19 @@ export class AIController {
     valid: boolean;
     warning?: string;
   } {
-    if (!preferences || preferences.length === 0) {
+    if (!preferences || preferences.length === 0)
       return {
         valid: true,
         warning: 'No preferences specified. Showing popular attractions.',
       };
-    }
 
     const lowerPrefs = preferences.map((p) => p.toLowerCase());
     for (const [a, b] of PLANNER_CONFIG.VALIDATION.CONFLICTING_PAIRS) {
-      if (lowerPrefs.includes(a) && lowerPrefs.includes(b)) {
+      if (lowerPrefs.includes(a) && lowerPrefs.includes(b))
         return {
           valid: true,
           warning: `Preferences "${a}" and "${b}" may conflict. We'll balance both, but consider focusing on one style.`,
         };
-      }
     }
 
     const hasVague = preferences.some((p) =>
@@ -656,14 +661,12 @@ export class AIController {
         p.toLowerCase().includes(v),
       ),
     );
-
-    if (hasVague) {
+    if (hasVague)
       return {
         valid: false,
         warning:
           'Please be more specific. Instead of "things to do", try "hiking", "temples", or "beaches".',
       };
-    }
 
     return { valid: true };
   }
@@ -672,18 +675,17 @@ export class AIController {
 
   private async executeSearch(query: unknown): Promise<SearchResponseDto> {
     const totalStart = process.hrtime.bigint();
-
     const originalQuery = typeof query === 'string' ? query.trim() : '';
-    if (!originalQuery) {
+    const validated = this.validateAndPreprocess(query);
+
+    if (!originalQuery)
       return {
         query: '',
         results: [],
         message:
           'Please enter a destination or interest (e.g., "beaches in Galle", "temples", "wildlife").',
       };
-    }
 
-    const validated = this.validateAndPreprocess(query);
     if (typeof validated === 'string') {
       const helpfulMessage = validated.includes('too short')
         ? `${validated} Try "Sigiriya", "Ella hiking", or "beach resorts".`
@@ -699,8 +701,8 @@ export class AIController {
     const queryVector = this.aiService.generateDummyEmbedding(cleaned, 1536);
     const embeddingEnd = process.hrtime.bigint();
     const embeddingTimeMs = Number(embeddingEnd - embeddingStart) / 1_000_000;
-
     const searchStart = process.hrtime.bigint();
+
     let rawResults: (EmbeddingItem & { score: number })[] = [];
     try {
       rawResults = await this.aiService.search(queryVector, 20);
@@ -708,6 +710,7 @@ export class AIController {
       this.logger.error(`Vector search failed: ${(error as Error).message}`);
       rawResults = [];
     }
+
     const searchEnd = process.hrtime.bigint();
     const searchTimeMs = Number(searchEnd - searchStart) / 1_000_000;
 
@@ -754,11 +757,7 @@ export class AIController {
         return this.collator.compare(this.stableId(a.id), this.stableId(b.id));
       })
       .slice(0, 5)
-      .map((item, idx) => ({
-        rank: idx + 1,
-        ...item,
-      }));
-
+      .map((item, idx) => ({ rank: idx + 1, ...item }));
     const { filtered, fallbackMessage } = this.filterByConfidenceThreshold(
       scored,
       'Medium',
@@ -800,13 +799,13 @@ export class AIController {
     @Query('minConfidence') minConfidence?: string,
   ): Promise<SearchResponseDto> {
     const validated = this.validateAndPreprocess(q);
-    if (typeof validated === 'string') {
+
+    if (typeof validated === 'string')
       return {
         query: typeof q === 'string' ? q : '',
         results: [],
         message: validated,
       };
-    }
 
     const { cleaned } = validated;
 
@@ -832,21 +831,11 @@ export class AIController {
         confidenceLevel,
       );
 
-      return {
-        query: cleaned,
-        results: filtered,
-        message: fallbackMessage,
-      };
+      return { query: cleaned, results: filtered, message: fallbackMessage };
     }
 
-    if (this.isServiceError(raw)) {
-      return {
-        query: cleaned,
-        results: [],
-        message: raw.message,
-      };
-    }
-
+    if (this.isServiceError(raw))
+      return { query: cleaned, results: [], message: raw.message };
     return {
       query: cleaned,
       results: [],
@@ -855,7 +844,6 @@ export class AIController {
   }
 
   /* ---------- Seed ---------- */
-
   @Post('seed')
   async seedDatabase(): Promise<{ message: string }> {
     try {
@@ -867,7 +855,6 @@ export class AIController {
   }
 
   /* ---------- Debug ---------- */
-
   @Get('debug/embedding')
   debugEmbedding(@Query('text') text: string) {
     const cleaned = preprocessQuery(text);
@@ -952,6 +939,7 @@ export class AIController {
       matched.length > 0
         ? (this.CATEGORY_ENERGY_SCORE[matched[0].toLowerCase()] ?? 2)
         : 2;
+
     const whyPlace: string[] = [];
     const whyDay: string[] = [];
     const whyTime: string[] = [];
@@ -960,7 +948,7 @@ export class AIController {
     /* -------------------------------------------------- */
     /*   Fallback (keep minimal and factual)            */
     /* -------------------------------------------------- */
-    if (ctx.isFallback) {
+    if (ctx.isFallback)
       return {
         selectionReason:
           'Included to ensure your itinerary remains complete despite limited strong matches.',
@@ -973,30 +961,26 @@ export class AIController {
         whyThisPlace: ['Limited preference-aligned results were available'],
         tips: ['Try adding more specific interests for better matches'],
       };
-    }
 
     /* -------------------------------------------------- */
     /*  Preference Faithfulness                        */
     /* -------------------------------------------------- */
-    if (matched.length > 0) {
+    if (matched.length > 0)
       whyPlace.push(
         `Matches your interest in ${matched.slice(0, 2).join(', ')}`,
       );
-    }
 
     /* -------------------------------------------------- */
-    /* Score + Confidence (NO exaggeration)          */
+    /*      Score + Confidence (NO exaggeration)          */
     /* -------------------------------------------------- */
-    if (confidence === 'High') {
+    if (confidence === 'High')
       whyPlace.push('Strong relevance based on search scoring');
-    } else if (confidence === 'Medium') {
+    else if (confidence === 'Medium')
       whyPlace.push('Good relevance based on search scoring');
-    } else {
-      whyPlace.push('Included based on overall ranking score');
-    }
+    else whyPlace.push('Included based on overall ranking score');
 
     /* -------------------------------------------------- */
-    /* Destination Region Alignment                   */
+    /*          Destination Region Alignment              */
     /* -------------------------------------------------- */
     const destRegion = this.inferRegion(ctx.destination);
     const placeRegion = this.inferRegion(`${result.title} ${result.content}`);
@@ -1006,86 +990,63 @@ export class AIController {
       tips.push('Consider travel time if staying within one region');
     }
 
-    /* -------------------------------------------------- */
-    /* Day Placement (aligned with planner logic)     */
-    /* -------------------------------------------------- */
-    if (ctx.dayNumber === 1 && ctx.activityIndex === 0) {
+    if (ctx.dayNumber === 1 && ctx.activityIndex === 0)
       whyDay.push('Scheduled first to ease into your trip');
-    } else if (ctx.dayNumber === ctx.totalDays) {
+    else if (ctx.dayNumber === ctx.totalDays)
       whyDay.push('Placed toward the end of your itinerary');
-    } else {
+    /* -------------------------------------------------- */
+    /*     Time Slot (Energy-aware explanation)           */
+    /* -------------------------------------------------- */ else
       whyDay.push('Balanced within your trip schedule');
-    }
-
-    /* -------------------------------------------------- */
-    /* Time Slot (Energy-aware explanation)              */
-    /* -------------------------------------------------- */
 
     if (energyScore === 3) {
       whyPlace.push('Classified as a higher-energy activity');
-
-      if (ctx.timeSlot === 'Morning') {
-        whyTime.push(
-          'Scheduled in the morning when energy levels are typically higher',
-        );
-      } else {
-        whyTime.push('Placed earlier in the day due to its active nature');
-      }
+      whyTime.push(
+        ctx.timeSlot === 'Morning'
+          ? 'Scheduled in the morning when energy levels are typically higher'
+          : 'Placed earlier in the day due to its active nature',
+      );
     } else if (energyScore === 1) {
       whyPlace.push('Classified as a relaxing or lower-energy experience');
-
-      if (ctx.timeSlot === 'Evening') {
-        whyTime.push('Scheduled later in the day to allow a more relaxed pace');
-      } else {
-        whyTime.push('Placed at a calmer time of day');
-      }
+      whyTime.push(
+        ctx.timeSlot === 'Evening'
+          ? 'Scheduled later in the day to allow a more relaxed pace'
+          : 'Placed at a calmer time of day',
+      );
     } else {
       whyPlace.push('Balanced activity with moderate energy level');
-
-      if (ctx.timeSlot === 'Morning') {
+      if (ctx.timeSlot === 'Morning')
         whyTime.push('Assigned to the morning slot');
-      } else if (ctx.timeSlot === 'Afternoon') {
+      else if (ctx.timeSlot === 'Afternoon')
         whyTime.push('Assigned to the afternoon slot');
-      } else if (ctx.timeSlot === 'Evening') {
+      else if (ctx.timeSlot === 'Evening')
         whyTime.push('Assigned to the evening slot');
-      }
     }
 
     /* -------------------------------------------------- */
-    /* Practical Tips (category-driven only)          */
+    /*     Practical Tips (category-driven only)          */
     /* -------------------------------------------------- */
     const titleLower = result.title.toLowerCase();
-
-    if (category === 'Beach') {
-      tips.push('Bring sun protection and water');
-    }
-
-    if (category === 'Nature' || category === 'Adventure') {
+    if (category === 'Beach') tips.push('Bring sun protection and water');
+    if (category === 'Nature' || category === 'Adventure')
       tips.push('Wear comfortable walking shoes');
-    }
-
-    if (category === 'Culture' || category === 'History') {
-      if (
-        titleLower.includes('temple') ||
+    if (
+      (category === 'Culture' || category === 'History') &&
+      (titleLower.includes('temple') ||
         titleLower.includes('kovil') ||
         titleLower.includes('church') ||
-        titleLower.includes('mosque')
-      ) {
-        tips.push('Dress modestly when visiting religious sites');
-      }
-    }
+        titleLower.includes('mosque'))
+    )
+      tips.push('Dress modestly when visiting religious sites');
 
     /* -------------------------------------------------- */
-    /* Selection Summary (strictly factual)           */
+    /*     Selection Summary (strictly factual)           */
     /* -------------------------------------------------- */
     const summaryParts: string[] = [];
-
-    if (matched.length > 0) {
+    if (matched.length > 0)
       summaryParts.push(
         `it aligns with your interest in ${matched.slice(0, 2).join(' and ')}`,
       );
-    }
-
     summaryParts.push(
       confidence === 'High' || confidence === 'Medium'
         ? 'it ranked well in search scoring'
@@ -1116,41 +1077,35 @@ export class AIController {
       learning;
 
     const parts: string[] = [];
-
     parts.push(`Ranking was adjusted using learned feedback preferences.`);
 
     // CATEGORY LEARNING
-    if (categoryMultiplier > 1.05) {
+    if (categoryMultiplier > 1.05)
       parts.push(
         `Your positive feedback on ${category.toLowerCase()} activities slightly increased its ranking priority.`,
       );
-    } else if (categoryMultiplier < 0.95) {
+    else if (categoryMultiplier < 0.95)
       parts.push(
         `Past feedback slightly reduced priority for ${category.toLowerCase()} activities.`,
       );
-    } else {
+    else
       parts.push(
         `No strong learned preference was detected for this category.`,
       );
-    }
 
     // TRUST + CONFIDENCE
     if (feedbackCount > 0) {
       parts.push(
         `${feedbackCount} feedback entries contributed to personalization.`,
       );
-
       parts.push(
         `Personalization influence currently operates at ${(confidence * 100).toFixed(0)}% confidence.`,
       );
     }
-
-    if (trustMultiplier > 1.05) {
+    if (trustMultiplier > 1.05)
       parts.push(
         `Your feedback history currently has stronger influence on recommendations.`,
       );
-    }
-
     parts.push(
       `Personalization adjustments remain safely limited to maintain stable rankings.`,
     );
@@ -1174,14 +1129,10 @@ export class AIController {
     );
 
     baseExplanation.whyThisPlace ??= [];
-
-    if (!userId) {
-      return baseExplanation;
-    }
-
+    if (!userId) return baseExplanation;
     try {
       /* -------------------------------------------------- */
-      /* FETCH USER SIGNALS (single fetch block)            */
+      /*      FETCH USER SIGNALS (single fetch block)       */
       /* -------------------------------------------------- */
       const [positiveDestinations, categoryPrefs, frequentPlaces] =
         await Promise.all([
@@ -1191,7 +1142,6 @@ export class AIController {
         ]);
 
       const destinationLower = (context.destination || '').toLowerCase();
-
       const resultTitleLower = result.title.toLowerCase();
 
       /* -------------------------------------------------- */
@@ -1218,52 +1168,47 @@ export class AIController {
       }
 
       /* -------------------------------------------------- */
-      /* CATEGORY BEHAVIORAL PREFERENCE                     */
+      /*         CATEGORY BEHAVIORAL PREFERENCE             */
       /* -------------------------------------------------- */
       const matchingPrefs = categoryPrefs.find((p) =>
         category.toLowerCase().includes(p.category.toLowerCase()),
       );
 
-      if (matchingPrefs && matchingPrefs.count >= 3) {
+      if (matchingPrefs && matchingPrefs.count >= 3)
         baseExplanation.whyThisPlace.push(
           `Based on your ${matchingPrefs.count} previous ${matchingPrefs.category} selections`,
         );
-      }
 
       /* -------------------------------------------------- */
-      /* FREQUENT PLACE SIGNAL                              */
+      /*               FREQUENT PLACE SIGNAL                */
       /* -------------------------------------------------- */
-      if (frequentPlaces.some((p) => p.placeId === String(result.id))) {
+      if (frequentPlaces.some((p) => p.placeId === String(result.id)))
         baseExplanation.whyThisPlace.unshift(
           '⭐ You have shown interest in this before',
         );
-      }
 
       /* -------------------------------------------------- */
-      /* EXPLANATION ALIGNMENT (FEEDBACK RANKING)        */
+      /*      EXPLANATION ALIGNMENT (FEEDBACK RANKING)      */
       /* -------------------------------------------------- */
       if (learning) {
         this.logger.log(
           `[EXPLANATION ALIGNMENT] category=${category}, multiplier=${learning.categoryMultiplier}, trust=${learning.trustMultiplier}, confidence=${learning.confidence}`,
         );
 
-        if (learning.categoryMultiplier > 1.05) {
+        if (learning.categoryMultiplier > 1.05)
           baseExplanation.whyThisPlace.push(
             `Ranked higher because you frequently prefer ${category.toLowerCase()} experiences.`,
           );
-        }
 
-        if (learning.categoryMultiplier < 0.95) {
+        if (learning.categoryMultiplier < 0.95)
           baseExplanation.whyThisPlace.push(
             `Shown slightly lower based on your past feedback.`,
           );
-        }
 
         const feedbackExplanation = this.buildFeedbackExplanation(
           learning,
           category,
         );
-
         if (feedbackExplanation) {
           baseExplanation.whyThisPlace.push(feedbackExplanation);
         }
@@ -1337,7 +1282,7 @@ export class AIController {
         }
       }
 
-      // HARD per-pref cap
+      // HARD per-pref cap to prevent any single preference from dominating the score, especially for low-quality results
       if (prefBoost > 0) {
         const capped = Math.min(prefBoost, PER_PREF_CAP);
         boost += capped;
@@ -1349,7 +1294,7 @@ export class AIController {
       }
     }
 
-    // Multi-match bonus, but also cap it
+    // Multi-match bonus, but also cap it to prevent too many preferences from overwhelming the base score
     if (matchedPrefs.length > 1) {
       const rawBonus =
         (matchedPrefs.length - 1) *
@@ -1374,13 +1319,13 @@ export class AIController {
     // Normalize if user gives many preferences
     boost = this.normalizeByPrefCount(boost, preferences.length);
 
-    if (matchedPrefs.length > 0) {
-      const details = matchedPrefs
-        .slice(0, 6)
-        .map((m) => `${m.pref} (${m.location}: +${m.boost})`)
-        .join(', ');
-      rankingDetails.adjustments.push(`Preferences (capped): ${details}`);
-    }
+    if (matchedPrefs.length > 0)
+      rankingDetails.adjustments.push(
+        `Preferences (capped): ${matchedPrefs
+          .slice(0, 6)
+          .map((m) => `${m.pref} (${m.location}: +${m.boost})`)
+          .join(', ')}`,
+      );
 
     return boost;
   }
@@ -1442,7 +1387,6 @@ export class AIController {
         if (dest && dest.length >= PLANNER_CONFIG.SEARCH.MIN_QUERY_LENGTH) {
           const titleLower = result.title.toLowerCase();
           const contentLower = result.content.toLowerCase();
-
           const hasDestInTitle = titleLower.includes(dest);
           const hasDestInContent = contentLower.includes(dest);
           const hasNearMetadata = text.includes('near:') && text.includes(dest);
@@ -1493,11 +1437,11 @@ export class AIController {
           );
 
           const prefSoftener = result.confidence === 'Low' ? 0.6 : 1.0;
-          if (prefSoftener !== 1.0) {
+
+          if (prefSoftener !== 1.0)
             rankingDetails.adjustments.push(
               'Preference softener applied (Low confidence)',
             );
-          }
 
           const appliedPrefBoost =
             preferenceBoost * boostMultiplier * prefSoftener;
@@ -1539,28 +1483,29 @@ export class AIController {
         }
 
         /* -------------------- TRIP OPTIMIZATION -------------------- */
-        if (tripType === 'short') {
-          if (text.match(/fort|temple|kovil|church|museum|beach/)) {
-            const boost =
-              PLANNER_CONFIG.SCORING.TRIP_OPTIMIZATION.SHORT_BOOST *
-              boostMultiplier;
-            priorityScore += boost;
-            rankingDetails.adjustments.push(
-              `Short trip boost: +${boost.toFixed(2)}`,
-            );
-          }
+        if (
+          tripType === 'short' &&
+          text.match(/fort|temple|kovil|church|museum|beach/)
+        ) {
+          const boost =
+            PLANNER_CONFIG.SCORING.TRIP_OPTIMIZATION.SHORT_BOOST *
+            boostMultiplier;
+          priorityScore += boost;
+          rankingDetails.adjustments.push(
+            `Short trip boost: +${boost.toFixed(2)}`,
+          );
         }
-
-        if (tripType === 'long') {
-          if (text.match(/nature|park|wildlife|relax|spa|garden/)) {
-            const boost =
-              PLANNER_CONFIG.SCORING.TRIP_OPTIMIZATION.LONG_BOOST *
-              boostMultiplier;
-            priorityScore += boost;
-            rankingDetails.adjustments.push(
-              `Long trip boost: +${boost.toFixed(2)}`,
-            );
-          }
+        if (
+          tripType === 'long' &&
+          text.match(/nature|park|wildlife|relax|spa|garden/)
+        ) {
+          const boost =
+            PLANNER_CONFIG.SCORING.TRIP_OPTIMIZATION.LONG_BOOST *
+            boostMultiplier;
+          priorityScore += boost;
+          rankingDetails.adjustments.push(
+            `Long trip boost: +${boost.toFixed(2)}`,
+          );
         }
 
         /* -------------------- RELEVANCE CEILING -------------------- */
@@ -1585,12 +1530,7 @@ export class AIController {
 
         rankingDetails.finalScore = priorityScore;
 
-        return {
-          ...result,
-          priorityScore,
-          rankingDetails,
-          matchedPreferences,
-        };
+        return { ...result, priorityScore, rankingDetails, matchedPreferences };
       })
       .sort((a, b) => {
         const scoreDiff = this.q(b.priorityScore) - this.q(a.priorityScore);
@@ -1617,12 +1557,13 @@ export class AIController {
   ): Promise<number> {
     if (!userId) return 0;
 
-    // CONSISTENCY LOCK: don't personalize low-quality items
+    // CONSISTENCY LOCK: don't personalize low-quality items to maintain stable relevance-first rankings
     const baseScore = result.score || 0;
+
     if (baseScore < PLANNER_CONFIG.PERSONALIZATION.MIN_BASE_SCORE) return 0;
 
     let boost = 0;
-    let feedbackBoost = 0; // ⚠️ LEARNING CAP: Track feedback separately
+    let feedbackBoost = 0; // ⚠️ LEARNING CAP: Track feedback separately to apply a cap on how much it can influence the score
     const resultText = `${result.title} ${result.content}`.toLowerCase();
 
     // 0) FEEDBACK INFLUENCE (capped separately)
@@ -1652,7 +1593,7 @@ export class AIController {
 
         if (resultText.includes(prefLower)) {
           boost += PLANNER_CONFIG.RANKING.INTEREST_MATCH.EXACT;
-          break; // apply once
+          break;
         }
 
         const mappedCategories = this.INTEREST_CATEGORY_MAP[prefLower] || [];
@@ -1680,9 +1621,8 @@ export class AIController {
           | 'MODERATE'
           | 'ACTIVE';
         const paceConfig = PLANNER_CONFIG.RANKING.PACE_MODIFIERS[paceKey];
-        if (paceConfig?.PREFER_CATEGORIES.includes(category)) {
+        if (paceConfig?.PREFER_CATEGORIES.includes(category))
           boost += paceConfig.BOOST;
-        }
       }
 
       // 3) BEHAVIORAL SIGNALS: frequent category
@@ -1698,8 +1638,6 @@ export class AIController {
           normalizedCount;
       }
 
-      // 4) RECENT ENGAGEMENT (if implemented in TripStoreService)
-      // Safe-guard: if method doesn't exist at runtime, catch below.
       const recentSelectionsRaw =
         await this.tripStore.getRecentUserSelections?.(userId);
 
@@ -1711,39 +1649,34 @@ export class AIController {
             if (!s || typeof s !== 'object') return false;
 
             const o = s as Record<string, unknown>;
+
             return (
-              typeof o.placeId === 'string' &&
-              typeof o.category === 'string' &&
-              typeof o.timestamp === 'string'
+              typeof o['placeId'] === 'string' &&
+              typeof o['category'] === 'string' &&
+              typeof o['timestamp'] === 'string'
             );
           },
         );
 
-        const categoryLower = category.toLowerCase();
-        const resultIdStr = String(result.id);
-
-        const hasRecent = recentSelections.some(
-          (s) =>
-            s.placeId === resultIdStr ||
-            s.category.toLowerCase() === categoryLower,
-        );
-
-        if (hasRecent) {
+        if (
+          recentSelections.some(
+            (s) =>
+              s.placeId === String(result.id) ||
+              s.category.toLowerCase() === category.toLowerCase(),
+          )
+        )
           boost += PLANNER_CONFIG.RANKING.BEHAVIOR_WEIGHTS.RECENT_SELECTION;
-        }
       }
 
       // 5) AVOIDED CATEGORY (negative)
       const avoided = await this.tripStore.getUserAvoidedCategories?.(userId);
-      if (Array.isArray(avoided)) {
-        if (
-          avoided
-            .map((x: string) => x.toLowerCase())
-            .includes(category.toLowerCase())
-        ) {
-          boost += PLANNER_CONFIG.RANKING.BEHAVIOR_WEIGHTS.AVOIDED_CATEGORY;
-        }
-      }
+      if (
+        Array.isArray(avoided) &&
+        avoided
+          .map((x: string) => x.toLowerCase())
+          .includes(category.toLowerCase())
+      )
+        boost += PLANNER_CONFIG.RANKING.BEHAVIOR_WEIGHTS.AVOIDED_CATEGORY;
 
       // Legacy: frequent places boost
       const frequentPlaces = await this.tripStore.getUserFrequentPlaces(userId);
@@ -1804,6 +1737,7 @@ export class AIController {
 
     // Get pace deterministically (single fetch)
     let userPace: 'relaxed' | 'moderate' | 'active' | undefined;
+
     try {
       userPace = await this.tripStore.getUserTravelPace(userId);
       this.logger.log(`[ranking] userId=${userId} pace=${userPace}`);
@@ -1822,7 +1756,6 @@ export class AIController {
 
         // CONSISTENCY LOCK: fixed precision rounding
         const finalScore = this.q(item.priorityScore + personalizationBoost);
-
         const baseScore = item.score || 0;
 
         // ⚠️ LEARNING CAP: Combined learning influence ceiling (feedback + preference + personalization)
@@ -1842,7 +1775,7 @@ export class AIController {
             ...item.rankingDetails,
             personalizationBoost: this.q(personalizationBoost),
             userPace,
-            relevanceCeiling: maxFinal, // optional debug info
+            relevanceCeiling: maxFinal,
           },
         };
       }),
@@ -1850,8 +1783,9 @@ export class AIController {
 
     return personalizedScored.sort((a, b) => {
       const diff = this.q(b.priorityScore) - this.q(a.priorityScore);
-      if (Math.abs(diff) > this.EPS) return diff;
-      return this.collator.compare(this.stableId(a.id), this.stableId(b.id));
+      return Math.abs(diff) > this.EPS
+        ? diff
+        : this.collator.compare(this.stableId(a.id), this.stableId(b.id));
     });
   }
 
@@ -1876,22 +1810,14 @@ export class AIController {
     ratio: number,
   ): 'Morning' | 'Afternoon' | 'Evening' {
     // High energy prefers earlier but not all morning
-    if (energy === 3) {
-      if (ratio < 0.4) return 'Morning';
-      if (ratio < 0.75) return 'Afternoon';
-      return 'Evening';
-    }
+    if (energy === 3)
+      return ratio < 0.4 ? 'Morning' : ratio < 0.75 ? 'Afternoon' : 'Evening';
 
     // Relax prefers later but not all evening
-    if (energy === 1) {
-      if (ratio < 0.3) return 'Afternoon';
-      return 'Evening';
-    }
+    if (energy === 1) return ratio < 0.3 ? 'Afternoon' : 'Evening';
 
-    // Neutral natural flow
-    if (ratio < 0.33) return 'Morning';
-    if (ratio < 0.66) return 'Afternoon';
-    return 'Evening';
+    // Otherwise, neutral natural flow
+    return ratio < 0.33 ? 'Morning' : ratio < 0.66 ? 'Afternoon' : 'Evening';
   }
 
   private getDayEnergyProfile(
@@ -1917,15 +1843,8 @@ export class AIController {
   ): 'Morning' | 'Afternoon' | 'Evening' {
     // ---------------- HIGH ENERGY DAY ----------------
     if (dayType === 'high') {
-      if (energy === 3) {
-        if (ratio < 0.5) return 'Morning';
-        return 'Afternoon';
-      }
-
-      if (energy === 1) {
-        if (ratio > 0.6) return 'Evening';
-        return 'Afternoon';
-      }
+      if (energy === 3) return ratio < 0.5 ? 'Morning' : 'Afternoon';
+      if (energy === 1) return ratio > 0.6 ? 'Evening' : 'Afternoon';
     }
 
     // ---------------- MODERATE DAY ----------------
@@ -1939,14 +1858,11 @@ export class AIController {
       // Only ONE high energy early
       if (energy === 3 && ratio < 0.3) return 'Morning';
       // Spread neutral + relax naturally
-      if (ratio < 0.5) return 'Afternoon';
-      return 'Evening';
+      return ratio < 0.5 ? 'Afternoon' : 'Evening';
     }
 
     // Default fallback distribution
-    if (ratio < 0.33) return 'Morning';
-    if (ratio < 0.66) return 'Afternoon';
-    return 'Evening';
+    return ratio < 0.33 ? 'Morning' : ratio < 0.66 ? 'Afternoon' : 'Evening';
   }
 
   private assignTimeSlot(
@@ -1956,30 +1872,19 @@ export class AIController {
     dayNumber: number,
     totalDays: number,
   ): 'Morning' | 'Afternoon' | 'Evening' {
-    // Edge case safety
+    // Edge case safety check: if no activities, default to afternoon
     if (totalActivitiesInDay <= 0) return 'Afternoon';
     const energy = this.getEnergyScoreForItem(item);
 
     // Single activity → energy based
-    if (totalActivitiesInDay === 1) {
-      if (energy === 3) return 'Morning';
-      if (energy === 1) return 'Evening';
-      return 'Afternoon';
-    }
+    if (totalActivitiesInDay === 1)
+      return energy === 3 ? 'Morning' : energy === 1 ? 'Evening' : 'Afternoon';
+    const ratio = activityIndex / (totalActivitiesInDay - 1);
 
-    const ratio =
-      totalActivitiesInDay > 1 ? activityIndex / (totalActivitiesInDay - 1) : 0;
-
-    // -----------------------------
     // SINGLE DAY TRIP
-    // -----------------------------
-    if (totalDays === 1) {
-      return this.assignSingleDaySlot(energy, ratio);
-    }
+    if (totalDays === 1) return this.assignSingleDaySlot(energy, ratio);
 
-    // -----------------------------
     // MULTI DAY TRIP
-    // -----------------------------
     const dayType = this.getDayEnergyProfile(dayNumber, totalDays);
 
     return this.assignMultiDaySlot(energy, ratio, dayType);
@@ -1988,13 +1893,6 @@ export class AIController {
   /* --------------------------------------------------
      MULTI-DAY TRIP (Balanced flow logic)
     -------------------------------------------------- */
-  // // If only one activity that day → schedule by energy
-  // if (totalActivitiesInDay === 1) {
-  //   if (energy === 3) return 'Morning';
-  //   if (energy === 1) return 'Evening';
-  //   return 'Afternoon';
-  // }
-
   // // If two activities → split by energy naturally
   // if (totalActivitiesInDay === 2) {
   //   if (energy === 3) return activityIndex === 0 ? 'Morning' : 'Afternoon';
@@ -2183,8 +2081,6 @@ export class AIController {
     return 'Sightseeing';
   }
 
-  private categoryCache = new Map<string | number, ItineraryCategory>();
-
   private determineActivityCategory(
     title: string,
     content: string,
@@ -2193,9 +2089,8 @@ export class AIController {
     preferences?: string[],
     resultId?: string | number,
   ): ItineraryCategory {
-    if (resultId && this.categoryCache.has(resultId)) {
+    if (resultId && this.categoryCache.has(resultId))
       return this.categoryCache.get(resultId)!;
-    }
 
     let category = this.inferCategoryFromText(title, content, preferences);
 
@@ -2231,14 +2126,12 @@ export class AIController {
     );
 
     const sorted = [...scoredResults].sort((a, b) => {
-      const aScore = this.q(a.priorityScore);
-      const bScore = this.q(b.priorityScore);
-      const diff = bScore - aScore;
-
+      const diff = this.q(b.priorityScore) - this.q(a.priorityScore);
       const epsilon = Math.pow(10, -PLANNER_CONFIG.CONSISTENCY.SCORE_PRECISION);
-      if (Math.abs(diff) > epsilon) return diff;
 
-      return this.collator.compare(this.stableId(a.id), this.stableId(b.id));
+      return Math.abs(diff) > epsilon
+        ? diff
+        : this.collator.compare(this.stableId(a.id), this.stableId(b.id));
     });
 
     for (const result of sorted) {
@@ -2246,9 +2139,7 @@ export class AIController {
 
       // QUALITY GATE: Enforce minimum quality threshold
       // Never select items below MINIMUM confidence, even for diversity
-      if (result.score < PLANNER_CONFIG.CONFIDENCE.MINIMUM) {
-        continue;
-      }
+      if (result.score < PLANNER_CONFIG.CONFIDENCE.MINIMUM) continue;
 
       const textKey = `${result.title} ${result.content}`.toLowerCase();
       if (textSet.has(textKey)) continue;
@@ -2294,13 +2185,12 @@ export class AIController {
     theme: string;
     explanation: string;
   } {
-    if (!activities?.length) {
+    if (!activities?.length)
       return {
         theme: 'Free Day',
         explanation:
           'No specific activities planned - explore at your own pace.',
       };
-    }
 
     const categories = activities
       .map((a) => (a.category || '').trim().toLowerCase())
@@ -2446,11 +2336,10 @@ export class AIController {
     totalDays: number,
     dayActivities: EnhancedItineraryItemDto[],
   ): string {
-    if (dayNumber === 1) {
-      if (activity.category === 'Arrival')
-        return 'First day activity - easy after traveling.';
-      return 'Good starter activity for day one.';
-    }
+    if (dayNumber === 1)
+      return activity.category === 'Arrival'
+        ? 'First day activity - easy after traveling.'
+        : 'Good starter activity for day one.';
     if (dayNumber === totalDays)
       return 'Final day highlight to end your trip well.';
 
@@ -2517,8 +2406,8 @@ export class AIController {
         const pace = await this.tripStore.getUserTravelPace(userId);
         const paceKey = pace.toUpperCase() as 'RELAXED' | 'MODERATE' | 'ACTIVE';
         const paceConfig = PLANNER_CONFIG.RANKING.PACE_MODIFIERS[paceKey];
-        if (paceConfig) MAX_PER_DAY = paceConfig.MAX_ACTIVITIES_PER_DAY;
 
+        if (paceConfig) MAX_PER_DAY = paceConfig.MAX_ACTIVITIES_PER_DAY;
         this.logger.log(
           `[itinerary] userId=${userId} pace=${pace} maxPerDay=${MAX_PER_DAY}`,
         );
@@ -2550,7 +2439,7 @@ export class AIController {
     const dayPlans: DayPlan[] = [];
     const baseDate = this.parseLocalDate(startDate);
     const seenText = new Set<string>();
-    const metricsCache = new Map<string, any>();
+    const metricsCache = new Map<string, PersonalizationMetrics>();
 
     /* ================= DAY LOOP ================= */
     for (let day = 1; day <= dayCount; day++) {
@@ -2558,6 +2447,7 @@ export class AIController {
       const bucket = dayBuckets[day - 1] ?? [];
       const activitiesForDay: EnhancedItineraryItemDto[] = [];
 
+      /* ================= ACTIVITY LOOP ================= */
       for (let i = 0; i < bucket.length; i++) {
         const result = bucket[i];
         const scoredResult = scored.find((s) => s.id === result.id);
@@ -2582,21 +2472,18 @@ export class AIController {
         const novelty = this.computeNovelty(normalizedText, seenText);
         seenText.add(normalizedText);
 
-        const totalDays = dayCount;
-
         const timeSlot = this.assignTimeSlot(
           scoredResult,
           i,
           bucket.length,
           day,
-          totalDays,
+          dayCount,
         );
 
         /* ================= PERSONALIZATION METRICS ================= */
-        let learningMetrics;
-
+        let learningMetrics: PersonalizationMetrics | undefined;
         if (userId) {
-          if (!metricsCache.has(category)) {
+          if (!metricsCache.has(category))
             metricsCache.set(
               category,
               await this.rankingService.getPersonalizationMetrics(
@@ -2604,11 +2491,8 @@ export class AIController {
                 category,
               ),
             );
-          }
 
-          learningMetrics = metricsCache.get(category) as
-            | PersonalizationMetrics
-            | undefined;
+          learningMetrics = metricsCache.get(category);
         }
 
         /* ================= EXPLANATION CONTEXT ================= */
@@ -2653,14 +2537,53 @@ export class AIController {
           dayCount,
           activitiesForDay,
         );
+
+        // ── Collect AI decision factors for this activity ────────────────────
+        if (userId) {
+          const rankingDetails: RankingDetails = scoredResult.rankingDetails;
+          const personalizationBoost: number =
+            typeof rankingDetails.personalizationBoost === 'number'
+              ? rankingDetails.personalizationBoost
+              : 0;
+          const { preferenceInfluencePct, feedbackInfluencePct } =
+            AIDecisionLoggerService.computeInfluencePcts(
+              scoredResult.score ?? 0,
+              scoredResult.priorityScore,
+              personalizationBoost,
+            );
+          this.currentSessionActivities.push({
+            placeName: result.title,
+            category,
+            day,
+            timeSlot,
+            baseScore: parseFloat((scoredResult.score ?? 0).toFixed(4)),
+            finalScore: parseFloat(scoredResult.priorityScore.toFixed(4)),
+            personalizationBoost: parseFloat(personalizationBoost.toFixed(4)),
+            preferenceInfluencePct,
+            feedbackInfluencePct,
+            trustScore: parseFloat(
+              (learningMetrics?.trustScore ?? 0.5).toFixed(4),
+            ),
+            trustMultiplier: parseFloat(
+              (learningMetrics?.trustMultiplier ?? 1).toFixed(4),
+            ),
+            categoryMultiplier: parseFloat(
+              (learningMetrics?.categoryMultiplier ?? 1).toFixed(4),
+            ),
+            feedbackCount: learningMetrics?.feedbackCount ?? 0,
+            confidenceLevel: result.confidence ?? 'Low',
+            adjustments: Array.isArray(rankingDetails.adjustments)
+              ? rankingDetails.adjustments
+              : [],
+          });
+        }
       }
 
       /* ================= EMPTY DAY SAFETY ================= */
-      if (activitiesForDay.length === 0) {
+      if (activitiesForDay.length === 0)
         activitiesForDay.push(this.createSingleDayFallback(day, destination));
-      }
 
-      /* ================= ARRIVAL NORMALIZATION ================= */
+      // Arrival normalisation for day 1
       if (day === 1 && activitiesForDay.length > 0) {
         activitiesForDay[0].category = 'Arrival';
         activitiesForDay[0].timeSlot = 'Afternoon';
@@ -2668,14 +2591,12 @@ export class AIController {
       }
 
       const themeData = this.generateDayTheme(activitiesForDay);
-      const groupingReason = this.generateGroupingExplanation(activitiesForDay);
-
       dayPlans.push({
         day,
         date: this.formatLocalDate(dayDate),
         theme: themeData.theme,
         themeExplanation: themeData.explanation,
-        groupingReason,
+        groupingReason: this.generateGroupingExplanation(activitiesForDay),
         activities: activitiesForDay,
       });
     }
@@ -2818,24 +2739,18 @@ export class AIController {
     planConfidence: 'High' | 'Medium' | 'Low',
     preferencesMatched: string[],
   ): string {
-    if (usedFallback) {
+    if (usedFallback)
       return 'We created a basic plan, but found limited strong matches. Try adding specific interests (like "beach" or "temples") or nearby town names for better results.';
-    }
 
-    if (planConfidence === 'High') {
-      if (preferencesMatched.length > 0) {
-        return `Great! We found strong matches for ${preferencesMatched.join(', ')}.`;
-      }
-      return 'Great! We found strong suggestions for your destination.';
-    }
+    if (planConfidence === 'High')
+      return preferencesMatched.length > 0
+        ? `Great! We found strong matches for ${preferencesMatched.join(', ')}.`
+        : 'Great! We found strong suggestions for your destination.';
 
-    if (planConfidence === 'Medium') {
-      if (preferencesMatched.length > 0) {
-        return `Good matches found for ${preferencesMatched.join(', ')}. Some activities have lower confidence.`;
-      }
-      return 'We found some good options, though some have lower confidence.';
-    }
-
+    if (planConfidence === 'Medium')
+      return preferencesMatched.length > 0
+        ? `Good matches found for ${preferencesMatched.join(', ')}. Some activities have lower confidence.`
+        : 'We found some good options, though some have lower confidence.';
     return 'We found limited strong matches. Try adding more specific preferences or nearby locations for better suggestions.';
   }
 
@@ -2851,8 +2766,12 @@ export class AIController {
       (req.headers['x-user-id'] as string | undefined) || undefined;
     const userId: string | undefined = authUserId || headerUserId;
 
-    const startTotal = process.hrtime.bigint();
+    // ── Reset decision logging state for this request ─────────────────────
+    const sessionId = AIDecisionLoggerService.generateSessionId();
+    this.currentSessionId = sessionId;
+    this.currentSessionActivities = [];
 
+    const startTotal = process.hrtime.bigint();
     const prefValidation = this.validatePreferences(body.preferences);
 
     if (!prefValidation.valid) {
@@ -2929,16 +2848,15 @@ export class AIController {
     // ===============================
     // NORMAL SEARCH FLOW ONLY SHOWN
     // ===============================
+    const searchResults = await this.executeSearch(
+      [
+        destinationLower,
+        'attractions',
+        'places to visit',
+        ...preferences.map((p) => p.toLowerCase()),
+      ].join(' '),
+    );
 
-    const searchTerms = [
-      destinationLower,
-      'attractions',
-      'places to visit',
-      ...preferences.map((p) => p.toLowerCase()),
-    ];
-
-    const query = searchTerms.join(' ');
-    const searchResults = await this.executeSearch(query);
     const gated = this.gateByNearOrRegion(
       searchResults.results,
       destinationLower,
@@ -2989,8 +2907,27 @@ export class AIController {
       ),
     };
 
-    let savedMeta: { tripId: string; versionNo: number } | null = null;
+    // ── Fire AI decision log (non-blocking) ───────────────────────────────
+    if (userId && this.currentSessionActivities.length > 0) {
+      const decisionLog: TripPlanDecisionLog = {
+        sessionId,
+        userId,
+        destination: response.plan.destination,
+        totalDays: dayCount,
+        planConfidence,
+        usedFallback,
+        preferencesProvided: preferences,
+        preferencesMatched,
+        activities: this.currentSessionActivities,
+      };
+      this.decisionLogger
+        .logTripPlanDecisions(decisionLog)
+        .catch((e) =>
+          this.logger.error('Failed to log AI decision factors', e),
+        );
+    }
 
+    let savedMeta: { tripId: string; versionNo: number } | null = null;
     if (userId) {
       try {
         const feedbackSignal = await this.buildFeedbackSignal(
@@ -3014,10 +2951,7 @@ export class AIController {
           },
         });
 
-        savedMeta = {
-          tripId: saved.tripId,
-          versionNo: saved.versionNo,
-        };
+        savedMeta = { tripId: saved.tripId, versionNo: saved.versionNo };
       } catch (e) {
         this.logger.error(
           `[trip-plan] saveTripVersion failed: ${(e as Error).message}`,
@@ -3034,13 +2968,11 @@ export class AIController {
     } | null;
 
     let feedbackResponse: FeedbackSignal = null;
-
-    if (userId && savedMeta?.tripId) {
+    if (userId && savedMeta?.tripId)
       feedbackResponse = await this.buildFeedbackSignal(
         userId,
         savedMeta.tripId,
       );
-    }
 
     response.plan.summary = {
       ...response.plan.summary,
@@ -3053,7 +2985,7 @@ export class AIController {
     const endTotal = process.hrtime.bigint();
     const totalTime = Number(endTotal - startTotal) / 1_000_000;
 
-    if (userId) {
+    if (userId)
       this.analyticsService
         .recordEvent(
           'planner',
@@ -3070,7 +3002,6 @@ export class AIController {
         .catch((e) =>
           console.error('Failed to record planner_generated event', e),
         );
-    }
 
     this.logger.log(`[PERF] tripPlanEnhanced took ${totalTime.toFixed(2)}ms`);
 

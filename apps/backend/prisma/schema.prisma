@@ -205,3 +205,25 @@ model SystemAlert {
   @@index([resolvedAt])
 }
 
+model UserBehaviorEvent {
+  id        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userId    String   @map("user_id")
+  eventType String   @map("event_type")
+  itemId    String?  @map("item_id")
+  metadata  Json?    @default("{}")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  @@map("user_behavior_events")
+}
+
+model RecommendationLog {
+  id               String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userId           String   @map("user_id")
+  recommendationId String?  @map("recommendation_id")
+  itemId           String?  @map("item_id")
+  score            Float?
+  clicked          Boolean? @default(false)
+  createdAt        DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  @@map("recommendation_logs")
+}

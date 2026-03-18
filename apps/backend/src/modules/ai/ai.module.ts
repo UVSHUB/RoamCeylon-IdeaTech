@@ -9,6 +9,7 @@ import { TripStoreService } from './trips/trip-store.service';
 import { PlannerModule } from '../planner/planner.module';
 import { AnalyticsModule } from '../analytics/analytics.module';
 import { FeedbackModule } from '../feedback/feedback.module';
+import { AIDecisionLoggerService } from './decision/ai-decision-logger.service';
 
 @Module({
   imports: [
@@ -24,6 +25,6 @@ import { FeedbackModule } from '../feedback/feedback.module';
     ]),
   ],
   controllers: [AIController],
-  providers: [AIService, EmbeddingService, SearchService, TripStoreService],
+  providers: [AIService, EmbeddingService, SearchService, TripStoreService,  AIDecisionLoggerService],
 })
 export class AIModule {}

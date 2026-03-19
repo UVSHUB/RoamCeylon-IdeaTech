@@ -15,6 +15,7 @@ import { AnalyticsModule } from './modules/analytics/analytics.module';
 import { AlertsModule } from './modules/alerts/alerts.module';
 import { AnalyticsMiddleware } from './modules/analytics/analytics.middleware';
 import { ScheduleModule } from '@nestjs/schedule';
+import { MlModule } from './modules/ml/ml.module';
 // import { ThrottlerModule } from '@nestjs/throttler';
 
 @Module({
@@ -37,6 +38,7 @@ import { ScheduleModule } from '@nestjs/schedule';
     FeedbackModule,
     AnalyticsModule,
     AlertsModule,
+    MlModule,
   ],
   controllers: [AppController],
   providers: [AppService],

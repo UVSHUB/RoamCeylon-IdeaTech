@@ -1,1 +1,257 @@
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["postgresqlExtensions"]
+}
 
+datasource db {
+  provider   = "postgresql"
+  url        = env("DATABASE_URL")
+  // shadowDatabaseUrl = env("SHADOW_DATABASE_URL")
+  extensions = [citext(schema: "public"), postgis, vector]
+}
+
+model DriverLocation {
+  id        Int                     @id @default(autoincrement())
+  driverId  String
+  location  Unsupported("geometry")
+  updatedAt DateTime
+
+  @@index([location], map: "driver_location_idx", type: Gist)
+  @@index([driverId], map: "driver_id_idx")
+}
+
+model RideRequest {
+  id             Int                     @id @default(autoincrement())
+  passengerId    String
+  pickupLocation Unsupported("geometry")
+  destination    Unsupported("geometry")
+  status         String
+  createdAt      DateTime                @default(now())
+
+  @@index([pickupLocation], map: "ride_request_pickup_idx", type: Gist)
+  @@index([destination], map: "ride_request_dest_idx", type: Gist)
+  @@index([passengerId], map: "ride_request_passenger_idx")
+  @@index([status], map: "ride_request_status_idx")
+}
+
+model SystemMetadata {
+  key       String   @id
+  value     String
+  updatedAt DateTime
+}
+
+model User {
+  id          String    @id @default(uuid())
+  phoneNumber String    @unique @map("phone")
+  name        String?
+  createdAt   DateTime  @default(now())
+  email       String?
+  updatedAt   DateTime  @default(now())
+  birthday    DateTime?
+  gender      String?
+  preferences Json?
+}
+
+model embeddings {
+  id         Int                    @id @default(autoincrement())
+  embedding  Unsupported("vector")?
+  created_at DateTime               @default(now())
+  content    String?
+  title      String?
+
+  @@index([title])
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model spatial_ref_sys {
+  srid      Int     @id
+  auth_name String? @db.VarChar(256)
+  auth_srid Int?
+  srtext    String? @db.VarChar(2048)
+  proj4text String? @db.VarChar(2048)
+}
+
+model SavedTrip {
+  id          String   @id
+  userId      String
+  name        String
+  destination String
+  startDate   DateTime
+  endDate     DateTime
+  itinerary   Json
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  preferences Json?
+
+  @@index([userId, createdAt])
+  @@index([destination])
+  @@map("SavedTrip")
+}
+
+model PlannerFeedback {
+  id            Int      @id @default(autoincrement())
+  userId        String
+  tripId        String
+  feedbackValue Json
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @default(now()) @updatedAt
+
+  @@unique([userId, tripId], name: "unique_user_trip_feedback")
+  @@index([tripId])
+  @@index([userId])
+  @@index([createdAt])
+  @@map("PlannerFeedback")
+}
+
+model UserCategoryWeight {
+  id            Int      @id @default(autoincrement())
+  userId        String
+  category      String
+  weight        Float    @default(1.0)
+  feedbackCount Int      @default(0)
+  lastUpdated   DateTime @default(now())
+
+  @@unique([userId, category])
+  @@index([userId])
+  @@map("UserCategoryWeight")
+}
+
+model UserFeedbackSignal {
+  id            Int      @id @default(autoincrement())
+  userId        String   @unique
+  positiveCount Int      @default(0)
+  negativeCount Int      @default(0)
+  neutralCount  Int      @default(0)
+  trustScore    Float    @default(0.5)
+  updatedAt     DateTime @updatedAt
+
+  @@index([userId])
+}
+
+model TransportSession {
+  id             String    @id @default(uuid())
+  passengerId    String
+  driverId       String?
+  status         String
+  pickupLocation Json
+  destination    Json
+  fare           Decimal?
+  startTime      DateTime  @default(now())
+  endTime        DateTime?
+  statusUpdates  Json[]    @default([])
+
+  @@index([passengerId])
+  @@index([driverId])
+  @@index([status])
+}
+
+model PlannerMetadata {
+  id        Int      @id @default(autoincrement())
+  key       String   @unique
+  value     Json
+  updatedAt DateTime @updatedAt
+}
+
+model PlannerEvent {
+  id        String   @id @default(uuid())
+  userId    String?
+  eventType String
+  metadata  Json     @default("{}")
+  timestamp DateTime @default(now())
+
+  @@index([userId])
+  @@index([eventType])
+  @@index([timestamp])
+  @@index([eventType, timestamp])
+}
+
+model FeedbackEvent {
+  id        String   @id
+  userId    String?
+  eventType String
+  metadata  Json     @default("{}")
+  timestamp DateTime @default(now())
+
+  @@index([userId])
+  @@index([eventType])
+  @@index([timestamp])
+  @@index([eventType, timestamp])
+}
+
+model SystemMetric {
+  id        String   @id @default(uuid())
+  userId    String?
+  eventType String
+  metadata  Json     @default("{}")
+  timestamp DateTime @default(now())
+
+  @@index([eventType])
+  @@index([timestamp])
+  @@index([eventType, timestamp])
+}
+
+model SystemAlert {
+  id          String    @id @default(uuid())
+  type        String
+  severity    String
+  metricValue Float
+  threshold   Float
+  createdAt   DateTime  @default(now())
+  resolvedAt  DateTime?
+
+  @@index([type])
+  @@index([severity])
+  @@index([createdAt])
+  @@index([resolvedAt])
+}
+
+model UserBehaviorEvent {
+  id        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userId    String   @map("user_id")
+  eventType String   @map("event_type")
+  itemId    String?  @map("item_id")
+  metadata  Json?    @default("{}")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  @@map("user_behavior_events")
+}
+
+model RecommendationLog {
+  id               String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userId           String   @map("user_id")
+  recommendationId String?  @map("recommendation_id")
+  itemId           String?  @map("item_id")
+  score            Float?
+  clicked          Boolean? @default(false)
+  createdAt        DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  @@map("recommendation_logs")
+}
+
+model UserInterestProfile {
+  userId          String   @id @map("user_id")
+  culturalScore   Int      @default(0) @map("cultural_score")
+  adventureScore  Int      @default(0) @map("adventure_score")
+  relaxationScore Int      @default(0) @map("relaxation_score")
+  updatedAt       DateTime @default(now()) @map("updated_at") @db.Timestamptz
+
+  @@map("user_interest_profile")
+}
+
+model DestinationCategoryScore {
+  destinationId   String   @id @map("destination_id")
+  category        String
+  popularityScore Float    @map("popularity_score")
+  updatedAt       DateTime @default(now()) @map("updated_at") @db.Timestamptz
+
+  @@map("destination_category_scores")
+}
+
+model FeedbackSummary {
+  userId           String   @id @map("user_id")
+  positiveFeedback Int      @default(0) @map("positive_feedback")
+  negativeFeedback Int      @default(0) @map("negative_feedback")
+  updatedAt        DateTime @default(now()) @map("updated_at") @db.Timestamptz
+
+  @@map("feedback_summary")
+}

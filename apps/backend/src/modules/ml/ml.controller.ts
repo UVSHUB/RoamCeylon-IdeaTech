@@ -8,7 +8,10 @@ import {
 } from '@nestjs/common';
 import { MlService } from './ml.service';
 import { TrackBehaviorDto } from './dto/track-behavior.dto';
-import { MlPredictionService, MLPredictionRequest } from './services/mlPrediction.service';
+import {
+  MlPredictionService,
+  MLPredictionRequest,
+} from './services/mlPrediction.service';
 
 @Controller('api')
 export class MlController {

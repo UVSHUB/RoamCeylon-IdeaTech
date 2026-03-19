@@ -1,14 +1,17 @@
 import { Injectable, InternalServerErrorException } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import { TrackBehaviorDto } from './dto/track-behavior.dto';
-import { MlPredictionService } from './services/mlPrediction.service';
+import {
+  MlPredictionService,
+  MLPredictionResponse,
+} from './services/mlPrediction.service';
 
 @Injectable()
 export class MlService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly mlPredictionService: MlPredictionService,
-  ) { }
+  ) {}
 
   async trackBehavior(dto: TrackBehaviorDto) {
     try {
@@ -45,33 +48,39 @@ export class MlService {
 
     // 2. Fetch ML properties for destinations
     // Fallback categories for mock
-    const destinationsInput = ruleRecommendations.map(r => ({
+    const destinationsInput = ruleRecommendations.map((r) => ({
       id: r.item_id,
       category: r.item_id === 'trip_001' ? 'cultural' : 'mixed',
     }));
 
-    let mlResults: any = null;
+    let mlResults: MLPredictionResponse | null = null;
     try {
       mlResults = await this.mlPredictionService.getMLRecommendations({
         user_id: userId,
         destinations: destinationsInput,
       });
     } catch (error) {
-      console.error('ML service failed, falling back to rule-based ONLY', error);
+      console.error(
+        'ML service failed, falling back to rule-based ONLY',
+        error,
+      );
     }
 
     // 3. Build Hybrid Score
-    const finalRecommendations = ruleRecommendations.map(ruleRec => {
+    const finalRecommendations = ruleRecommendations.map((ruleRec) => {
       let mlScore = 0;
       if (mlResults?.recommendations) {
-        const match = mlResults.recommendations.find(m => m.destination_id === ruleRec.item_id);
+        const match = mlResults.recommendations.find(
+          (m) => m.destination_id === ruleRec.item_id,
+        );
         if (match) mlScore = match.ml_score;
       }
 
       const ruleScore = ruleRec.score;
       // Formula: Final Score = (Rule Score * 0.7) + (ML Score * 0.3)
       // If mlScore is 0 (missing data new user), just use rule score
-      const finalScore = mlScore === 0 ? ruleScore : (ruleScore * 0.7) + (mlScore * 0.3);
+      const finalScore =
+        mlScore === 0 ? ruleScore : ruleScore * 0.7 + mlScore * 0.3;
 
       return {
         destination_id: ruleRec.item_id,

@@ -28,7 +28,9 @@ export class MlPredictionService {
    * Generates ML predictions. Falls back to features passed in the request if provided,
    * otherwise fetches from the database.
    */
-  async getMLRecommendations(dto: MLPredictionRequest): Promise<MLPredictionResponse | null> {
+  async getMLRecommendations(
+    dto: MLPredictionRequest,
+  ): Promise<MLPredictionResponse | null> {
     const { user_id, destinations } = dto;
     let features = dto.user_features;
 
@@ -39,7 +41,9 @@ export class MlPredictionService {
       });
 
       if (!userProfile) {
-        this.logger.warn(`No features found for ${user_id}. Returning null for fallback.`);
+        this.logger.warn(
+          `No features found for ${user_id}. Returning null for fallback.`,
+        );
         return null;
       }
 
@@ -57,10 +61,13 @@ export class MlPredictionService {
       if (cat.includes('cultur')) score = features?.cultural_score || 0;
       else if (cat.includes('adventur')) score = features?.adventure_score || 0;
       else if (cat.includes('relax')) score = features?.relaxation_score || 0;
-      else score = ((features?.cultural_score || 0) + (features?.adventure_score || 0)) / 2; // Default mock average
+      else
+        score =
+          ((features?.cultural_score || 0) + (features?.adventure_score || 0)) /
+          2; // Default mock average
 
       // Mock normalization of feature scoring bounds
-      let normalizedScore = 0.5 + (score * 0.05);
+      let normalizedScore = 0.5 + score * 0.05;
       normalizedScore = Math.min(Math.max(normalizedScore, 0.1), 0.99);
 
       return {

@@ -4,7 +4,7 @@ import { TrackBehaviorDto } from './dto/track-behavior.dto';
 
 @Injectable()
 export class MlService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(private readonly prisma: PrismaService) { }
 
   async trackBehavior(dto: TrackBehaviorDto) {
     try {
